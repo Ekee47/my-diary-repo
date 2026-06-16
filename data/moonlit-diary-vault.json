@@ -1,0 +1,13 @@
+{
+  "kind": "moonlit-diary-encrypted-vault",
+  "version": 1,
+  "crypto": {
+    "name": "AES-GCM",
+    "kdf": "PBKDF2",
+    "hash": "SHA-256",
+    "iterations": 210000,
+    "salt": "Fmlz/ZOyb9tmBK9/0++W1Q==",
+    "iv": "gQoE6QKcrkTV1NEF"
+  },
+  "payload": "fz6vHy/j42w9brqC3+V4PNIucoj/0MHyoXan8XDs1qQqVJ6JstVyBCOGr8kGkOde0szgmfFRP2RZ3/QSqgQbLEiNLjAdkp5+/M5q9AGVTmyA"
+}

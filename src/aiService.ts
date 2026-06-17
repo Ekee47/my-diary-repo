@@ -1,4 +1,5 @@
 // src/aiService.ts
+
 export interface DiaryEntry {
   id: string;
   date: string;
@@ -9,7 +10,7 @@ export interface DiaryEntry {
 // Automatically pulls the key securely baked in from GitHub Actions
 const API_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL_NAME = "llama3-8b-8192"; // Ultra-fast, great with multi-lingual text
+const MODEL_NAME = "llama-3.1-8b-instant"; // Active, ultra-fast 2026 free-tier model
 
 const SYSTEM_PROMPT = `
 You are the private, intelligent AI brain of the user's personal journal.
@@ -24,14 +25,12 @@ CRITICAL INSTRUCTIONS FOR TEMPORAL REASONING:
 
 /**
  * 1. AI SMART SEARCH
- * Processes the text using semantic timelines instead of simple keyword matching.
  */
 export async function smartAISearch(query: string, entries: DiaryEntry[]): Promise<string> {
   if (!API_KEY) {
     return "AI Error: VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.";
   }
 
-  // Strip simple HTML tags from bodyHtml so the AI gets clean text
   const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
 
   const formattedContext = entries
@@ -60,21 +59,26 @@ Based on the rules, deduce the exact answer to the user's query.
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt }
         ],
-        temperature: 0.2, // Low temperature for factual timeline matching
+        temperature: 0.2,
       }),
     });
+
+    // Smart Error Catcher: Shows the real issue if the API fails
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      return `AI Response Error (${response.status}): ${errData?.error?.message || "Failed to communicate with Groq servers."}`;
+    }
 
     const data = await response.json();
     return data.choices[0].message.content;
   } catch (error) {
     console.error("Groq AI Error:", error);
-    return "Error communicating with your AI setup. Check your network connection.";
+    return "Failed to dispatch request. Check your internet connection or browser console logs.";
   }
 }
 
 /**
  * 2. AI DYNAMIC WRITING ASSISTANT
- * Generates custom conversational writing prompts based on real historical themes.
  */
 export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<string> {
   if (!API_KEY || entries.length === 0) {
@@ -83,7 +87,6 @@ export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<s
 
   const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
   
-  // Look at the latest 5 entries to determine current mood/events
   const recentEntries = entries.slice(-5);
   const formattedContext = recentEntries
     .map((e) => `[Date: ${e.date}]\nEntry: ${cleanText(e.bodyHtml)}`)
@@ -113,9 +116,11 @@ Generate ONE unique, deeply personalized question to prompt them to write today.
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt }
         ],
-        temperature: 0.7, // Higher temperature for creative assistant variations
+        temperature: 0.7,
       }),
     });
+
+    if (!response.ok) return "How was your day today? Feel free to write about what's going on.";
 
     const data = await response.json();
     return data.choices[0].message.content;

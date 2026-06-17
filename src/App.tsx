@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
 import { smartAISearch, generateAICustomQuestion } from "./aiService";
@@ -61,71 +61,47 @@ type EncryptedVaultFile = {
     salt: string;
     iv: string;
   };
-  payload: string;
-};
-
-const CONFIG_STORAGE_KEY = "moonlit-diary-github-config-v1";
-const PBKDF2_ITERATIONS = 210_000;
-const DEFAULT_CONFIG: GitHubConfig = {
-  owner: "",
-  repo: "",
-  branch: "main",
-  path: "data/moonlit-diary-vault.json",
-  token: "",
+  ciphertext: string;
 };
 
 const MOODS: MoodOption[] = [
-  { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
-  { id: "depressed", label: "Depressed", color: "#5da8ff", glow: "rgba(93, 168, 255, 0.36)", description: "Heavy, quiet, low battery" },
-  { id: "sleepy", label: "Sleepy", color: "#a78bfa", glow: "rgba(167, 139, 250, 0.4)", description: "Slow, soft, tired mind" },
-  { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
-  { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
+  { id: "happy", label: "Happy", color: "from-amber-400 to-orange-500", glow: "shadow-amber-500/20", description: "Feeling positive, energetic, or accomplished" },
+  { id: "depressed", label: "Low", color: "from-blue-500 to-indigo-600", glow: "shadow-blue-500/20", description: "Feeling down, tired, anxious, or heavy" },
+  { id: "sleepy", label: "Chill", color: "from-teal-400 to-emerald-600", glow: "shadow-teal-500/20", description: "Calm, peaceful, lazy, or ready to rest" },
+  { id: "angry", label: "Frustrated", color: "from-rose-500 to-red-600", glow: "shadow-rose-500/20", description: "Irritated, stressed, or holding intense tension" },
+  { id: "romantic", label: "Deep", color: "from-purple-500 to-pink-600", glow: "shadow-purple-500/20", description: "Loving, reflective, nostalgic, or deeply connected" },
 ];
 
-const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
-  acc[mood.id] = mood;
-  return acc;
-}, {} as Record<MoodId, MoodOption>);
+// Helper to create safe unique IDs without external library overhead
+function createId() {
+  return Math.random().toString(36).substring(2, 11);
+}
 
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-const SEMANTIC_DICTIONARY: Record<string, string[]> = {
-  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
-  alex: ["friend", "buddy", "partner", "mate", "brother"],
-  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
-  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
-  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
-  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
-};
-
+// Inline component to turn [1st july 2026] text formats into active link anchors
 interface AIResponseRendererProps {
   text: string;
   onDateClick: (isoDateStr: string) => void;
 }
 
-/**
- * Converts text like "1st july 2026" into standard "2026-07-01"
- */
 function parseReadableDateToISO(readableDate: string): string {
   const clean = readableDate.toLowerCase().trim();
   const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
+  
   if (!match) return readableDate;
   
-  const day = match[1].padStart(2, '0');
+  const day = match[1].padStart(2, "0");
   const monthName = match[2];
   const year = match[3];
   
   const months: Record<string, string> = {
-    january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
-    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+    january: "01", february: "02", march: "03", april: "04", may: "05", june: "06",
+    july: "07", august: "08", september: "09", october: "10", november: "11", december: "12"
   };
   
-  return `${year}-${months[monthName] || '01'}-${day}`;
+  const month = months[monthName] || "01";
+  return `${year}-${month}-${day}`;
 }
 
-/**
- * Renders AI response text, turning readable date strings into clickable system buttons
- */
 export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
   const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
   const parts = text.split(dateRegex);
@@ -141,17 +117,8 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
             <button
               key={index}
               onClick={() => onDateClick(isoDate)}
-              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors"
-              style={{
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                font: 'inherit',
-                color: '#22d3ee',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                textDecoration: 'underline'
-              }}
+              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 underline mx-0.5 align-baseline cursor-pointer bg-transparent border-none p-0 focus:outline-none transition-colors"
+              type="button"
             >
               {rawReadableDate}
             </button>
@@ -163,1861 +130,874 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
   );
 }
 
-
 export default function App() {
-  const storedConfig = useMemo(loadStoredConfig, []);
-  const todayKey = useMemo(() => dateToKey(new Date()), []);
-  const [config, setConfig] = useState<GitHubConfig | null>(storedConfig);
-  const [passphrase, setPassphrase] = useState("");
-  const [vault, setVault] = useState<VaultData>(() => createEmptyVault());
-  const [remoteSha, setRemoteSha] = useState<string | null>(null);
-  const [syncState, setSyncState] = useState<SyncState>("locked");
-  const [syncError, setSyncError] = useState("");
-  const [isUnlocked, setIsUnlocked] = useState(false);
+  // Navigation & Primary System Core States
   const [screen, setScreen] = useState<Screen>("home");
-  const [selectedDate, setSelectedDate] = useState(todayKey);
-  const [editingDate, setEditingDate] = useState(todayKey);
-  const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
-  const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
-  const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
-
-  const entryByDate = useMemo(() => {
-    const map = new Map<string, DiaryEntry>();
-    vault.entries.forEach((entry) => map.set(entry.date, entry));
-    return map;
-  }, [vault.entries]);
-
-  async function unlockVault(nextConfig: GitHubConfig, nextPassphrase: string, rememberConfig: boolean) {
-    const cleanedConfig = normalizeConfig(nextConfig);
-    setSyncError("");
-    setSyncState("loading");
-
-    try {
-      if (!cleanedConfig.owner || !cleanedConfig.repo || !cleanedConfig.branch || !cleanedConfig.path) {
-        throw new Error("Add your GitHub owner, repo, branch, and vault file path.");
-      }
-
-      if (!cleanedConfig.token) {
-        throw new Error("Add a GitHub token with Contents read and write access.");
-      }
-
-      if (!nextPassphrase.trim()) {
-        throw new Error("Add the passphrase that unlocks your diary vault.");
-      }
-
-      const remote = await fetchGitHubVaultFile(cleanedConfig);
-      let nextVault = createEmptyVault();
-      let nextSha = remote.sha;
-
-      if (remote.exists && remote.text.trim()) {
-        const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
-        nextVault = await openVaultFile(parsed, nextPassphrase);
-      } else {
-        const encrypted = await encryptVault(nextVault, nextPassphrase);
-        const created = await putGitHubVaultFile(
-          cleanedConfig,
-          encrypted,
-          null,
-          "Create encrypted Moonlit Diary vault",
-        );
-        nextSha = created.sha;
-      }
-
-      if (rememberConfig) {
-        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(cleanedConfig));
-      } else {
-        localStorage.removeItem(CONFIG_STORAGE_KEY);
-      }
-
-      setConfig(cleanedConfig);
-      setPassphrase(nextPassphrase);
-      setVault(nextVault);
-      setRemoteSha(nextSha);
-      setSyncState("ready");
-      setIsUnlocked(true);
-      setScreen("home");
-    } catch (error) {
-      setSyncState("error");
-      setSyncError(getErrorMessage(error));
-    }
-  }
-
-  async function reloadVault() {
-    if (!config || !passphrase) return;
-    setSyncError("");
-    setSyncState("loading");
-
-    try {
-      const remote = await fetchGitHubVaultFile(config);
-      if (!remote.exists || !remote.text.trim()) {
-        throw new Error("The vault file was not found on GitHub.");
-      }
-
-      const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
-      const nextVault = await openVaultFile(parsed, passphrase);
-      setVault(nextVault);
-      setRemoteSha(remote.sha);
-      setSyncState("ready");
-    } catch (error) {
-      setSyncState("error");
-      setSyncError(getErrorMessage(error));
-    }
-  }
-
-  async function persistVault(nextVault: VaultData, commitMessage: string) {
-    if (!config || !passphrase) {
-      throw new Error("Unlock your GitHub vault before saving.");
-    }
-
-    setSyncError("");
-    setSyncState("saving");
-
-    try {
-      const encrypted = await encryptVault(nextVault, passphrase);
-      const saved = await putGitHubVaultFile(config, encrypted, remoteSha, commitMessage);
-      setVault(nextVault);
-      setRemoteSha(saved.sha);
-      setSyncState("saved");
-    } catch (error) {
-      setSyncState("error");
-      setSyncError(getErrorMessage(error));
-      throw error;
-    }
-  }
-
-  async function saveEntry(entry: DiaryEntry) {
-    const entries = vault.entries.filter((item) => item.date !== entry.date);
-    const nextVault: VaultData = {
-      ...vault,
-      updatedAt: new Date().toISOString(),
-      entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
-    };
-
-    await persistVault(nextVault, `Save diary entry for ${entry.date}`);
-    setSelectedDate(entry.date);
-    setVisibleMonth(keyToDate(entry.date));
-    setScreen("home");
-  }
-
-  async function deleteEntry(dateKey: string) {
-    const nextVault: VaultData = {
-      ...vault,
-      updatedAt: new Date().toISOString(),
-      entries: vault.entries.filter((entry) => entry.date !== dateKey),
-    };
-
-    await persistVault(nextVault, `Delete diary entry for ${dateKey}`);
-    setSelectedDate(dateKey);
-    setVisibleMonth(keyToDate(dateKey));
-    setScreen("home");
-  }
-
-  function openEntry(dateKey: string) {
-    setEditingDate(dateKey);
-    setSelectedDate(dateKey);
-    setVisibleMonth(keyToDate(dateKey));
-    setScreen("entry");
-  }
-
-  function lockVault() {
-    setVault(createEmptyVault());
-    setPassphrase("");
-    setRemoteSha(null);
-    setSyncState("locked");
-    setSyncError("");
-    setIsUnlocked(false);
-    setScreen("home");
-  }
-
-  if (!isUnlocked) {
-    return (
-      <UnlockScreen
-        initialConfig={config ?? DEFAULT_CONFIG}
-        syncState={syncState}
-        syncError={syncError}
-        onUnlock={unlockVault}
-      />
-    );
-  }
-
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-[#03040a] text-slate-100">
-      <AmbientBackdrop />
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <TopBar
-          syncState={syncState}
-          currentScreen={screen}
-          onHome={() => setScreen("home")}
-          onYear={() => {
-            setYearView(keyToDate(selectedDate).getFullYear());
-            setScreen("year");
-          }}
-          onAIScreen={() => {
-            setSelectedAITag(null);
-            setScreen("ai");
-          }}
-          onNewEntry={() => openEntry(todayKey)}
-          onSync={reloadVault}
-          onLock={lockVault}
-        />
-
-        {syncError ? <SyncError message={syncError} /> : null}
-
-        <main className="flex-1 pb-8">
-          {screen === "home" ? (
-            <HomeView
-              entryByDate={entryByDate}
-              selectedDate={selectedDate}
-              visibleMonth={visibleMonth}
-              onSelectDate={setSelectedDate}
-              onVisibleMonthChange={setVisibleMonth}
-              onOpenEntry={openEntry}
-            />
-          ) : null}
-
-          {screen === "entry" ? (
-            <EntryEditor
-              key={editingDate}
-              dateKey={editingDate}
-              entry={entryByDate.get(editingDate)}
-              entryByDate={entryByDate}
-              syncState={syncState}
-              onBack={() => setScreen("home")}
-              onSave={saveEntry}
-              onDelete={deleteEntry}
-            />
-          ) : null}
-
-          {screen === "year" ? (
-            <YearPixelsView
-              year={yearView}
-              entryByDate={entryByDate}
-              onYearChange={setYearView}
-              onBack={() => setScreen("home")}
-              onOpenEntry={openEntry}
-            />
-          ) : null}
-
-          {screen === "ai" ? (
-            <AIIntelligenceView
-              entries={vault.entries}
-              initialTagFilter={selectedAITag}
-              onJumpToEntry={(dateKey) => {
-                openEntry(dateKey);
-              }}
-            />
-          ) : null}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function UnlockScreen({
-  initialConfig,
-  syncState,
-  syncError,
-  onUnlock,
-}: {
-  initialConfig: GitHubConfig;
-  syncState: SyncState;
-  syncError: string;
-  onUnlock: (config: GitHubConfig, passphrase: string, rememberConfig: boolean) => Promise<void>;
-}) {
-  const [draftConfig, setDraftConfig] = useState(initialConfig);
-  const [passphrase, setPassphrase] = useState("");
-  const [rememberConfig, setRememberConfig] = useState(true);
-  const isLoading = syncState === "loading" || syncState === "saving";
-
-  function updateConfig(field: keyof GitHubConfig, value: string) {
-    setDraftConfig((current) => ({ ...current, [field]: value }));
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await onUnlock(draftConfig, passphrase, rememberConfig);
-  }
-
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-[#02030a] text-slate-100">
-      <AmbientBackdrop />
-      <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-7xl items-center gap-10 px-5 py-10 lg:grid-cols-[0.95fr_1.05fr] lg:px-10">
-        <section className="animate-screen-in space-y-8">
-          <div className="inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-cyan-100/80 shadow-2xl shadow-cyan-950/30 backdrop-blur-xl">
-            <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.9)]" />
-            Encrypted GitHub file diary
-          </div>
-
-          <div className="space-y-5">
-            <p className="text-sm uppercase tracking-[0.55em] text-fuchsia-200/50">Moonlit</p>
-            <h1 className="max-w-3xl text-6xl font-semibold tracking-[-0.08em] text-white sm:text-7xl lg:text-8xl">
-              Your private night journal.
-            </h1>
-            <p className="max-w-2xl text-lg leading-8 text-slate-300/80">
-              A dark, calendar-first diary with rich writing, media attachments, encrypted GitHub storage, and a full year mood map.
-            </p>
-          </div>
-
-          <div className="grid max-w-2xl gap-3 text-sm text-slate-300/75 sm:grid-cols-3">
-            <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Calendar front</p>
-              <p className="mt-2 text-slate-400">A dot appears on every saved day.</p>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Rich entries</p>
-              <p className="mt-2 text-slate-400">Headings, bold, italic, underline, lists, links.</p>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Mood pixels</p>
-              <p className="mt-2 text-slate-400">A full year colored by how you felt.</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="animate-float-in rounded-[2rem] border border-white/10 bg-slate-950/70 p-5 shadow-2xl shadow-black/50 backdrop-blur-2xl sm:p-7">
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div className="space-y-2">
-              <p className="text-sm uppercase tracking-[0.35em] text-cyan-200/50">Vault access</p>
-              <h2 className="text-3xl font-semibold tracking-tight text-white">Open your GitHub diary file</h2>
-              <p className="text-sm leading-6 text-slate-400">
-                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The passphrase is never stored by this app.
-              </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="GitHub owner">
-                <input
-                  value={draftConfig.owner}
-                  onChange={(event) => updateConfig("owner", event.target.value)}
-                  placeholder="your-username"
-                  className="field-input"
-                />
-              </Field>
-              <Field label="Repository">
-                <input
-                  value={draftConfig.repo}
-                  onChange={(event) => updateConfig("repo", event.target.value)}
-                  placeholder="my-diary-repo"
-                  className="field-input"
-                />
-              </Field>
-              <Field label="Branch">
-                <input
-                  value={draftConfig.branch}
-                  onChange={(event) => updateConfig("branch", event.target.value)}
-                  placeholder="main"
-                  className="field-input"
-                />
-              </Field>
-              <Field label="Vault file path">
-                <input
-                  value={draftConfig.path}
-                  onChange={(event) => updateConfig("path", event.target.value)}
-                  placeholder="data/moonlit-diary-vault.json"
-                  className="field-input"
-                />
-              </Field>
-            </div>
-
-            <Field label="GitHub token">
-              <input
-                type="password"
-                value={draftConfig.token}
-                onChange={(event) => updateConfig("token", event.target.value)}
-                placeholder="Fine-grained token with Contents read/write"
-                className="field-input"
-              />
-            </Field>
-
-            <Field label="Diary passphrase">
-              <input
-                type="password"
-                value={passphrase}
-                onChange={(event) => setPassphrase(event.target.value)}
-                placeholder="Only this opens the encrypted vault"
-                className="field-input"
-              />
-            </Field>
-
-            <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={rememberConfig}
-                onChange={(event) => setRememberConfig(event.target.checked)}
-                className="h-4 w-4 accent-cyan-300"
-              />
-              Remember GitHub details on this device. Diary data still stays in the GitHub vault file.
-            </label>
-
-            {syncError ? <SyncError message={syncError} compact /> : null}
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="group relative w-full overflow-hidden rounded-2xl bg-cyan-200 px-5 py-4 text-sm font-semibold uppercase tracking-[0.26em] text-slate-950 shadow-2xl shadow-cyan-500/25 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span className="relative z-10">{isLoading ? "Opening vault..." : "Unlock diary"}</span>
-              <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/60 to-transparent transition duration-700 group-hover:translate-x-full" />
-            </button>
-          </form>
-        </section>
-      </main>
-    </div>
-  );
-}
-
-function TopBar({
-  syncState,
-  currentScreen,
-  onHome,
-  onYear,
-  onAIScreen,
-  onNewEntry,
-  onSync,
-  onLock,
-}: {
-  syncState: SyncState;
-  currentScreen: Screen;
-  onHome: () => void;
-  onYear: () => void;
-  onAIScreen: () => void;
-  onNewEntry: () => void;
-  onSync: () => void;
-  onLock: () => void;
-}) {
-  return (
-    <header className="mb-5 flex flex-col gap-4 rounded-[1.8rem] border border-white/10 bg-white/[0.035] px-4 py-4 shadow-2xl shadow-black/30 backdrop-blur-2xl sm:flex-row sm:items-center sm:justify-between sm:px-5">
-      <button type="button" onClick={onHome} className="group flex items-center gap-4 text-left">
-        <span className="relative grid h-12 w-12 place-items-center overflow-hidden rounded-2xl border border-cyan-200/20 bg-cyan-200/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]">
-          <span className="absolute h-9 w-9 rounded-full bg-cyan-300/20 blur-xl transition group-hover:bg-fuchsia-300/25" />
-          <span className="relative h-5 w-5 rounded-full border border-cyan-100/70 bg-slate-950 shadow-[inset_-6px_0_0_rgba(255,255,255,0.75)]" />
-        </span>
-        <span>
-          <span className="block text-xs uppercase tracking-[0.38em] text-cyan-100/50">Moonlit</span>
-          <span className="block text-2xl font-semibold tracking-[-0.04em] text-white">Diary Vault</span>
-        </span>
-      </button>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <SyncBadge state={syncState} />
-        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
-          Calendar
-        </button>
-        <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
-          <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
-          <span className="relative flex items-center gap-1">✨ AI Hub</span>
-        </button>
-        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
-          Year in pixels
-        </button>
-        <button type="button" onClick={onNewEntry} className="nav-button-primary">
-          New entry
-        </button>
-        <button type="button" onClick={onSync} className="nav-button">
-          Sync
-        </button>
-        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
-          Lock
-        </button>
-      </div>
-    </header>
-  );
-}
-
-function SyncBadge({ state }: { state: SyncState }) {
-  const labelByState: Record<SyncState, string> = {
-    locked: "Locked",
-    loading: "Loading",
-    ready: "Ready",
-    saving: "Saving",
-    saved: "Saved",
-    error: "Needs attention",
-  };
-
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-300">
-      <span
-        className={cn(
-          "h-2 w-2 rounded-full",
-          state === "error" ? "bg-rose-400" : "bg-cyan-300",
-          state === "loading" || state === "saving" ? "animate-pulse" : "",
-        )}
-      />
-      {labelByState[state]}
-    </span>
-  );
-}
-
-function HomeView({
-  entryByDate,
-  selectedDate,
-  visibleMonth,
-  onSelectDate,
-  onVisibleMonthChange,
-  onOpenEntry,
-}: {
-  entryByDate: Map<string, DiaryEntry>;
-  selectedDate: string;
-  visibleMonth: Date;
-  onSelectDate: (dateKey: string) => void;
-  onVisibleMonthChange: (date: Date) => void;
-  onOpenEntry: (dateKey: string) => void;
-}) {
-  const selectedEntry = entryByDate.get(selectedDate);
-  const monthEntries = [...entryByDate.values()].filter((entry) => {
-    const date = keyToDate(entry.date);
-    return date.getFullYear() === visibleMonth.getFullYear() && date.getMonth() === visibleMonth.getMonth();
-  });
-  const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
-  const yearLabel = visibleMonth.getFullYear();
-
-  // Dynamic tag compiler for current highlighted entry
-  const entryTags = useMemo(() => {
-    if (!selectedEntry) return [];
-    return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
-  }, [selectedEntry]);
-
-  return (
-    <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="animate-screen-in rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="space-y-3">
-            <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Monthly calendar</p>
-            <div>
-              <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl">{monthLabel}</h1>
-              <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
-            </div>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Pick a day, write your entry, and the calendar marks it with the saved mood color.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))}
-              className="round-button"
-              aria-label="Previous month"
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))}
-              className="round-button"
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))}
-              className="round-button"
-              aria-label="Next month"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-
-        <MonthlyCalendar
-          visibleMonth={visibleMonth}
-          selectedDate={selectedDate}
-          entryByDate={entryByDate}
-          onSelectDate={(dateKey) => {
-            onSelectDate(dateKey);
-            const date = keyToDate(dateKey);
-            if (date.getMonth() !== visibleMonth.getMonth() || date.getFullYear() !== visibleMonth.getFullYear()) {
-              onVisibleMonthChange(date);
-            }
-          }}
-          onOpenEntry={onOpenEntry}
-        />
-      </div>
-
-      <aside className="animate-float-in space-y-4">
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Selected day</p>
-          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-white">{formatDateLong(selectedDate)}</h2>
-
-          {selectedEntry ? (
-            <div className="mt-5 space-y-4">
-              <div className="flex flex-wrap gap-2 items-center">
-                <MoodChip mood={selectedEntry.mood} />
-                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
-                  {detectSentimentLabel(selectedEntry.bodyHtml)}
-                </span>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
-                <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
-              </div>
-              
-              {entryTags.length > 0 && (
-                <div>
-                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
-                  <div className="flex flex-wrap gap-1">
-                    {entryTags.map(t => (
-                      <span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">
-                        {t.startsWith("#") ? t : `#${t}`}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
-                <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
-              </div>
-              <p className="line-clamp-4 text-sm leading-6 text-slate-400">{htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}</p>
-              <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-                <span>{selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}</span>
-                <span>{formatBytes(totalAttachmentBytes(selectedEntry.attachments))}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-5 rounded-3xl border border-dashed border-white/15 bg-black/20 p-5 text-sm leading-6 text-slate-400">
-              No entry yet. Make this day visible in your calendar by saving a mood and a few lines.
-            </div>
-          )}
-
-          <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">
-            {selectedEntry ? "Edit entry" : "Write entry"}
-          </button>
-        </section>
-
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">This month</p>
-              <p className="mt-2 text-3xl font-semibold tracking-tight text-white">{monthEntries.length}</p>
-            </div>
-            <p className="max-w-[10rem] text-right text-sm leading-6 text-slate-400">written day{monthEntries.length === 1 ? "" : "s"} saved to GitHub</p>
-          </div>
-        </section>
-
-        <MoodLegend />
-      </aside>
-    </section>
-  );
-}
-
-// ... rest of the unchanged code (MonthlyCalendar, SyncBadge, etc.) stays exactly intact ...
-function MonthlyCalendar({
-  visibleMonth,
-  selectedDate,
-  entryByDate,
-  onSelectDate,
-  onOpenEntry,
-}: {
-  visibleMonth: Date;
-  selectedDate: string;
-  entryByDate: Map<string, DiaryEntry>;
-  onSelectDate: (dateKey: string) => void;
-  onOpenEntry: (dateKey: string) => void;
-}) {
-  const cells = buildMonthCells(visibleMonth);
-  const todayKey = dateToKey(new Date());
-
-  return (
-    <div className="mt-8">
-      <div className="grid grid-cols-7 gap-2 px-1 text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 sm:gap-3">
-        {WEEKDAYS.map((day) => (
-          <span key={day}>{day}</span>
-        ))}
-      </div>
-
-      <div className="mt-3 grid grid-cols-7 gap-2 sm:gap-3">
-        {cells.map((cell) => {
-          const entry = entryByDate.get(cell.dateKey);
-          const mood = entry ? MOOD_BY_ID[entry.mood] : null;
-          const isSelected = cell.dateKey === selectedDate;
-          const isToday = cell.dateKey === todayKey;
-
-          return (
-            <button
-              key={cell.dateKey}
-              type="button"
-              onClick={() => onSelectDate(cell.dateKey)}
-              onDoubleClick={() => onOpenEntry(cell.dateKey)}
-              className={cn(
-                "group relative aspect-square overflow-hidden rounded-[1.35rem] border text-left transition duration-300",
-                cell.inCurrentMonth ? "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]" : "border-white/[0.04] bg-white/[0.015] text-slate-600",
-                isSelected ? "scale-[1.02] border-cyan-200/70 bg-cyan-100/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]" : "",
-                isToday ? "ring-1 ring-fuchsia-200/40" : "",
-              )}
-              style={isSelected && mood ? { boxShadow: `0 0 44px ${mood.glow}` } : undefined}
-            >
-              <span className="absolute inset-x-3 top-3 flex items-center justify-between">
-                <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>{cell.day}</span>
-                {isToday ? <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" /> : null}
-              </span>
-
-              {entry ? (
-                <span
-                  className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150"
-                  style={{ backgroundColor: mood?.color, boxShadow: `0 0 18px ${mood?.glow}` }}
-                />
-              ) : null}
-
-              {entry ? (
-                <span
-                  className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block"
-                  title={entry.title}
-                >
-                  {entry.title}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function EntryEditor({
-  dateKey,
-  entry,
-  entryByDate,
-  syncState,
-  onBack,
-  onSave,
-  onDelete,
-}: {
-  dateKey: string;
-  entry?: DiaryEntry;
-  entryByDate: Map<string, DiaryEntry>;
-  syncState: SyncState;
-  onBack: () => void;
-  onSave: (entry: DiaryEntry) => Promise<void>;
-  onDelete: (dateKey: string) => Promise<void>;
-}) {
-  const [title, setTitle] = useState(entry?.title ?? "");
-  const [mood, setMood] = useState<MoodId>(entry?.mood ?? "happy");
-  const [bodyHtml, setBodyHtml] = useState(entry?.bodyHtml ?? "");
-  const [dailyWin, setDailyWin] = useState(entry?.dailyWin ?? "");
-  const [attachments, setAttachments] = useState<Attachment[]>(entry?.attachments ?? []);
-  const [localError, setLocalError] = useState("");
-  const [isWorking, setIsWorking] = useState(false);
-  const [aiPrompt, setAIPrompt] = useState<string | null>(null);
-  
-  const isSaving = syncState === "saving" || isWorking;
-  const activeMood = MOOD_BY_ID[mood];
-
-  const computedTags = useMemo(() => {
-    return extractTopicsAndTags(bodyHtml, title);
-  }, [bodyHtml, title]);
-
-  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
-  async function triggerAIPrompt() {
-    setAIPrompt("Consulting your timeline memory...");
-    try {
-      const allEntries = Array.from(entryByDate.values());
-      const customQuestion = await generateAICustomQuestion(allEntries);
-      setAIPrompt(customQuestion);
-    } catch (err) {
-      setAIPrompt("What's on your mind today? Tell me how your day went.");
-    }
-  }
-
-  async function handleSave() {
-    setLocalError("");
-    setIsWorking(true);
-
-    try {
-      const now = new Date().toISOString();
-      const nextEntry: DiaryEntry = {
-        id: entry?.id ?? createId(),
-        date: dateKey,
-        title: title.trim() || "Untitled entry",
-        mood,
-        bodyHtml: sanitizeHtml(bodyHtml).trim(),
-        dailyWin: dailyWin.trim(),
-        attachments,
-        createdAt: entry?.createdAt ?? now,
-        updatedAt: now,
-      };
-
-      await onSave(nextEntry);
-    } catch (error) {
-      setLocalError(getErrorMessage(error));
-    } finally {
-      setIsWorking(false);
-    }
-  }
-
-  async function handleDelete() {
-    if (!entry) return;
-    const confirmed = window.confirm("Delete this diary entry from the GitHub vault file?");
-    if (!confirmed) return;
-
-    setLocalError("");
-    setIsWorking(true);
-    try {
-      await onDelete(dateKey);
-    } catch (error) {
-      setLocalError(getErrorMessage(error));
-    } finally {
-      setIsWorking(false);
-    }
-  }
-
-  return (
-    <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <button type="button" onClick={onBack} className="round-button w-fit">
-            Back to calendar
-          </button>
-          <div className="flex items-center gap-2">
-            {entry ? (
-              <button type="button" onClick={handleDelete} disabled={isSaving} className="danger-button">
-                Delete
-              </button>
-            ) : null}
-            <button type="button" onClick={handleSave} disabled={isSaving} className="nav-button-primary py-3">
-              {isSaving ? "Saving..." : "Save entry"}
-            </button>
-          </div>
-        </div>
-
-        {/* AI Prompt Journaling Assistant Panel widget */}
-        <div className="mt-6 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
-              <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
-            </div>
-            <button 
-              type="button" 
-              onClick={triggerAIPrompt} 
-              className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
-            >
-              Generate Prompt
-            </button>
-          </div>
-          {aiPrompt && (
-            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">
-              "{aiPrompt}"
-            </div>
-          )}
-        </div>
-
-        <div className="mt-8 space-y-5">
-          <div className="flex flex-wrap items-center gap-3">
-            <MoodChip mood={mood} />
-            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
-            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
-              AI Assessment: {detectSentimentLabel(bodyHtml)}
-            </span>
-          </div>
-
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Give today a title"
-            className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl"
-          />
-
-          <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
-
-          {/* Extracted Topic clouds list display area */}
-          {computedTags.length > 0 && (
-            <div className="pt-2">
-              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
-              <div className="flex flex-wrap gap-1.5">
-                {computedTags.map(tag => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
-                    #{tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {localError ? <SyncError message={localError} compact /> : null}
-      </div>
-
-      <aside className="space-y-4">
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
-          <div className="mt-5 grid gap-2">
-            {MOODS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setMood(item.id)}
-                className={cn(
-                  "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
-                  item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
-                )}
-              >
-                <span className="h-4 w-4 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }} />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium text-white">{item.label}</span>
-                  <span className="block truncate text-xs text-slate-500">{item.description}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
-          <textarea
-            value={dailyWin}
-            onChange={(event) => setDailyWin(event.target.value)}
-            placeholder="One small productive thing, lesson, or gain from today..."
-            rows={5}
-            className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35"
-          />
-        </section>
-
-        <AttachmentPanel attachments={attachments} onChange={setAttachments} />
-      </aside>
-    </section>
-  );
-}
-
-function RichTextEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const editorRef = useRef<HTMLDivElement | null>(null);
-  const [isFocused, setIsFocused] = useState(false);
-
-  useEffect(() => {
-    if (editorRef.current && editorRef.current.innerHTML !== value) {
-      editorRef.current.innerHTML = value;
-    }
-  }, [value]);
-
-  function runCommand(command: string, commandValue?: string) {
-    editorRef.current?.focus();
-    document.execCommand(command, false, commandValue);
-    onChange(editorRef.current?.innerHTML ?? "");
-  }
-
-  function addLink() {
-    const url = window.prompt("Paste the link URL");
-    if (!url) return;
-    runCommand("createLink", url);
-  }
-
-  return (
-    <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-black/25">
-      <div className="flex flex-wrap gap-2 border-b border-white/10 bg-white/[0.035] p-3">
-        <ToolbarButton label="P" onClick={() => runCommand("formatBlock", "P")} />
-        <ToolbarButton label="H1" onClick={() => runCommand("formatBlock", "H1")} />
-        <ToolbarButton label="H2" onClick={() => runCommand("formatBlock", "H2")} />
-        <ToolbarButton label="B" onClick={() => runCommand("bold")} strong />
-        <ToolbarButton label="I" onClick={() => runCommand("italic")} italic />
-        <ToolbarButton label="U" onClick={() => runCommand("underline")} underline />
-        <ToolbarButton label="List" onClick={() => runCommand("insertUnorderedList")} />
-        <ToolbarButton label="Number" onClick={() => runCommand("insertOrderedList")} />
-        <ToolbarButton label="Quote" onClick={() => runCommand("formatBlock", "BLOCKQUOTE")} />
-        <ToolbarButton label="Link" onClick={addLink} />
-        <ToolbarButton label="Clear" onClick={() => runCommand("removeFormat")} />
-      </div>
-
-      <div className="relative">
-        {!htmlToText(value) && !isFocused ? (
-          <div className="pointer-events-none absolute left-5 top-5 text-slate-600">Start writing what happened today...</div>
-        ) : null}
-        <div
-          ref={editorRef}
-          contentEditable
-          suppressContentEditableWarning
-          onInput={() => onChange(editorRef.current?.innerHTML ?? "")}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          className="diary-prose min-h-[24rem] px-5 py-5 text-base leading-8 text-slate-200 outline-none sm:min-h-[30rem]"
-        />
-      </div>
-    </div>
-  );
-}
-
-function ToolbarButton({
-  label,
-  onClick,
-  strong,
-  italic,
-  underline,
-}: {
-  label: string;
-  onClick: () => void;
-  strong?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={(event) => {
-        event.preventDefault();
-        onClick();
-      }}
-      className={cn(
-        "rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-200/40 hover:bg-cyan-200/10 hover:text-white",
-        strong ? "font-black" : "",
-        italic ? "italic" : "",
-        underline ? "underline" : "",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
-function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void }) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [error, setError] = useState("");
-  const totalBytes = totalAttachmentBytes(attachments);
-
-  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const files = event.target.files;
-    if (!files?.length) return;
-    setError("");
-
-    try {
-      const nextAttachments = await filesToAttachments(files);
-      onChange([...attachments, ...nextAttachments]);
-    } catch (readError) {
-      setError(getErrorMessage(readError));
-    } finally {
-      event.target.value = "";
-    }
-  }
-
-  return (
-    <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-      <input ref={inputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleFileChange} />
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos. They are encrypted inside the GitHub vault file.</p>
-        </div>
-        <button type="button" onClick={() => inputRef.current?.click()} className="round-button shrink-0">
-          Add
-        </button>
-      </div>
-
-      <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-        {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
-      </div>
-
-      {totalBytes > 20 * 1024 * 1024 ? (
-        <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          Large media can make GitHub saves slower. Compress videos if commits begin to fail.
-        </p>
-      ) : null}
-
-      {error ? <SyncError message={error} compact /> : null}
-
-      <div className="mt-4 grid gap-3">
-        {attachments.map((attachment) => (
-          <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
-            <div className="aspect-video bg-slate-900">
-              {attachment.type.startsWith("image/") ? (
-                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover" />
-              ) : (
-                <video src={attachment.dataUrl} className="h-full w-full object-cover" controls />
-              )}
-            </div>
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
-                <p className="text-xs text-slate-500">{formatBytes(attachment.size)}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))}
-                className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
-              >
-                Remove
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function YearPixelsView({
-  year,
-  entryByDate,
-  onYearChange,
-  onBack,
-  onOpenEntry,
-}: {
-  year: number;
-  entryByDate: Map<string, DiaryEntry>;
-  onYearChange: (year: number) => void;
-  onBack: () => void;
-  onOpenEntry: (dateKey: string) => void;
-}) {
-  const months = useMemo(() => Array.from({ length: 12 }, (_, monthIndex) => new Date(year, monthIndex, 1)), [year]);
-  const writtenDays = [...entryByDate.values()].filter((entry) => keyToDate(entry.date).getFullYear() === year).length;
-
-  return (
-    <section className="animate-screen-in space-y-5">
-      <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-5 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="space-y-3">
-            <p className="text-sm uppercase tracking-[0.5em] text-fuchsia-200/50">Year in pixels</p>
-            <h1 className="text-6xl font-semibold tracking-[-0.08em] text-white sm:text-8xl">{year}</h1>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={onBack} className="round-button">
-              Back
-            </button>
-            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">
-              Prev year
-            </button>
-            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">
-              This year
-            </button>
-            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">
-              Next year
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-slate-400">
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">{writtenDays} written day{writtenDays === 1 ? "" : "s"}</span>
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">Click any pixel to open that date</span>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {months.map((monthDate) => (
-          <MonthPixelPanel key={monthDate.toISOString()} monthDate={monthDate} entryByDate={entryByDate} onOpenEntry={onOpenEntry} />
-        ))}
-      </div>
-
-      <MoodLegend />
-    </section>
-  );
-}
-
-function MonthPixelPanel({
-  monthDate,
-  entryByDate,
-  onOpenEntry,
-}: {
-  monthDate: Date;
-  entryByDate: Map<string, DiaryEntry>;
-  onOpenEntry: (dateKey: string) => void;
-}) {
-  const monthName = new Intl.DateTimeFormat("en", { month: "long" }).format(monthDate);
-  const cells = buildMonthCells(monthDate);
-
-  return (
-    <section className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-4 backdrop-blur-2xl transition duration-300 hover:bg-white/[0.055]">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white">{monthName}</h2>
-        <span className="text-xs text-slate-500">{monthDate.getFullYear()}</span>
-      </div>
-      <div className="grid grid-cols-7 gap-2">
-        {cells.map((cell) => {
-          const entry = entryByDate.get(cell.dateKey);
-          const mood = entry ? MOOD_BY_ID[entry.mood] : null;
-          return (
-            <button
-              key={cell.dateKey}
-              type="button"
-              onClick={() => onOpenEntry(cell.dateKey)}
-              title={`${formatDateLong(cell.dateKey)}${entry ? ` - ${entry.title}` : ""}`}
-              className={cn(
-                "aspect-square rounded-full transition duration-300 hover:scale-150 hover:ring-2 hover:ring-cyan-100/60",
-                cell.inCurrentMonth ? "opacity-100" : "opacity-20",
-              )}
-              style={{
-                backgroundColor: mood?.color ?? "rgba(148, 163, 184, 0.2)",
-                boxShadow: mood ? `0 0 16px ${mood.glow}` : "none",
-              }}
-            />
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-/* ==========================================================================
-   FIXED STEP 4 WORKSPACE VIEW: INTEGRATING SECURE COGNITIVE TIMELINE SEARCH
-   ========================================================================== */
-function AIIntelligenceView({
-  entries,
-  initialTagFilter,
-  onJumpToEntry,
-}: {
-  entries: DiaryEntry[];
-  initialTagFilter: string | null;
-  onJumpToEntry: (dateKey: string) => void;
-}) {
+  const [password, setPassword] = useState("");
+  const [syncState, setSyncState] = useState<SyncState>("locked");
+  const [vaultData, setVaultData] = useState<VaultData | null>(null);
+
+  // Active Context Cache Management
+  const [currentDate, setCurrentDate] = useState("");
+  const [currentTitle, setCurrentTitle] = useState("");
+  const [currentMood, setCurrentMood] = useState<MoodId>("happy");
+  const [currentBodyHtml, setCurrentBodyHtml] = useState("");
+  const [currentDailyWin, setCurrentDailyWin] = useState("");
+  const [currentAttachments, setCurrentAttachments] = useState<Attachment[]>([]);
+
+  // Filtering, Analysis & Intelligence States
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
-  
-  // NEW STATES: Capture deep timeline reasoning returns safely without storing static tokens
+  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
+  const [aiPromptQuestion, setAiPromptQuestion] = useState("What's on your mind today? Let it all flow out.");
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
 
-  const globalTopicCloud = useMemo(() => {
-    const frequencyMap: Record<string, number> = {};
-    entries.forEach((item) => {
-      const extracted = extractTopicsAndTags(item.bodyHtml, item.title);
-      extracted.forEach((t) => {
-        frequencyMap[t] = (frequencyMap[t] || 0) + 1;
+  // Reference elements for handling responsive focus locks
+  const editorRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Dedicated config configuration layer locked to GitHub directly via env/pre-build settings
+  const githubConfig: GitHubConfig = useMemo(() => ({
+    owner: "SrijanYadav", 
+    repo: "my-moonlit-vault-data", 
+    branch: "main",
+    path: "vault.json",
+    token: import.meta.env.VITE_GITHUB_TOKEN || ""
+  }), []);
+
+  // Fetch contextual writing questions generated dynamically using past diary entry context strings
+  useEffect(() => {
+    if (vaultData && vaultData.entries.length > 0) {
+      generateAICustomQuestion(vaultData.entries).then((promptText) => {
+        setAiPromptQuestion(promptText);
       });
-    });
-    return Object.entries(frequencyMap)
-      .map(([text, count]) => ({ text, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [entries]);
+    }
+  }, [vaultData]);
 
-  const expandedTerms = useMemo(() => {
-    const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (queries.length === 0) return [];
-    
-    const terms = [...queries];
-    queries.forEach(q => {
-      if (SEMANTIC_DICTIONARY[q]) {
-        terms.push(...SEMANTIC_DICTIONARY[q]);
+  // Encryption helper modules using standard internal window sub-crypto layers
+  async function deriveKey(pass: string, saltBytes: Uint8Array, iterations: number): Promise<CryptoKey> {
+    const encoder = new TextEncoder();
+    const baseKey = await window.crypto.subtle.importKey(
+      "raw",
+      encoder.encode(pass),
+      { name: "PBKDF2" },
+      false,
+      ["deriveKey"]
+    );
+    return window.crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: saltBytes,
+        iterations,
+        hash: "SHA-256",
+      },
+      baseKey,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+
+  async function encryptData(plainText: string, pass: string): Promise<EncryptedVaultFile> {
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const iterations = 100000;
+    const key = await deriveKey(pass, salt, iterations);
+    const encoder = new TextEncoder();
+    const ciphertextBuffer = await window.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      encoder.encode(plainText)
+    );
+    return {
+      kind: "moonlit-diary-encrypted-vault",
+      version: 1,
+      crypto: {
+        name: "AES-GCM",
+        kdf: "PBKDF2",
+        hash: "SHA-256",
+        iterations,
+        salt: btoa(String.fromCharCode(...salt)),
+        iv: btoa(String.fromCharCode(...iv)),
+      },
+      ciphertext: btoa(String.fromCharCode(...new Uint8Array(ciphertextBuffer))),
+    };
+  }
+
+  async function decryptData(encryptedFile: EncryptedVaultFile, pass: string): Promise<string> {
+    const salt = new Uint8Array(atob(encryptedFile.crypto.salt).split("").map((c) => c.charCodeAt(0)));
+    const iv = new Uint8Array(atob(encryptedFile.crypto.iv).split("").map((c) => c.charCodeAt(0)));
+    const ciphertext = new Uint8Array(atob(encryptedFile.ciphertext).split("").map((c) => c.charCodeAt(0)));
+    const key = await deriveKey(pass, salt, encryptedFile.crypto.iterations);
+    const decryptedBuffer = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      ciphertext
+    );
+    return new TextDecoder().decode(decryptedBuffer);
+  }
+
+  // Repository data loading modules
+  async function loadVault() {
+    if (!password.trim()) return;
+    setSyncState("loading");
+    try {
+      const url = `https://api.github.com/repos/${githubConfig.owner}/${githubConfig.repo}/contents/${githubConfig.path}?ref=${githubConfig.branch}`;
+      const headers: HeadersInit = { Accept: "application/vnd.github.v3+json" };
+      if (githubConfig.token) {
+        headers["Authorization"] = `token ${githubConfig.token}`;
       }
-      Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
-        if (synonyms.includes(q) && !terms.includes(key)) {
-          terms.push(key);
-        }
+      const res = await fetch(url, { headers, cache: "no-store" });
+      if (res.status === 404) {
+        const initialVault: VaultData = { version: 1, updatedAt: new Date().toISOString(), entries: [] };
+        setVaultData(initialVault);
+        setSyncState("ready");
+        return;
+      }
+      if (!res.ok) throw new Error("Could not contact GitHub storage backend container repo");
+      const fileMeta = await res.json();
+      const rawText = decodeURIComponent(escape(atob(fileMeta.content.replace(/\s/g, ""))));
+      const encryptedFile: EncryptedVaultFile = JSON.parse(rawText);
+      const decryptedText = await decryptData(encryptedFile, password);
+      setVaultData(JSON.parse(decryptedText));
+      setSyncState("ready");
+    } catch (e) {
+      console.error(e);
+      setSyncState("error");
+    }
+  }
+
+  async function saveVault(updatedData: VaultData) {
+    if (syncState === "locked" || !password.trim()) return;
+    setSyncState("saving");
+    try {
+      const plainText = JSON.stringify(updatedData);
+      const encryptedFile = await encryptData(plainText, password);
+      const contentString = btoa(unescape(encodeURIComponent(JSON.stringify(encryptedFile))));
+      const url = `https://api.github.com/repos/${githubConfig.owner}/${githubConfig.repo}/contents/${githubConfig.path}`;
+      const headers: HeadersInit = { Accept: "application/vnd.github.v3+json", "Content-Type": "application/json" };
+      if (githubConfig.token) {
+        headers["Authorization"] = `token ${githubConfig.token}`;
+      }
+      const metaRes = await fetch(`${url}?ref=${githubConfig.branch}`, { headers, cache: "no-store" });
+      let sha = "";
+      if (metaRes.ok) {
+        const metaData = await metaRes.json();
+        sha = metaData.sha;
+      }
+      const putRes = await fetch(url, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          message: `Sync updates - ${new Date().toISOString()}`,
+          content: contentString,
+          branch: githubConfig.branch,
+          sha: sha || undefined,
+        }),
       });
-    });
-    return Array.from(new Set(terms));
-  }, [searchQuery]);
+      if (!putRes.ok) throw new Error("Failed to write updated package layer securely into Git branch streams.");
+      setVaultData(updatedData);
+      setSyncState("saved");
+      setTimeout(() => setSyncState("ready"), 2500);
+    } catch (e) {
+      console.error(e);
+      setSyncState("error");
+    }
+  }
 
-  const filteredEntries = useMemo(() => {
-    return entries.filter((item) => {
-      const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
-      const titleClean = item.title.toLowerCase();
-      const dateString = item.date;
+  // Active workspace execution navigation handlers
+  function openEntry(dateString: string) {
+    const existing = vaultData?.entries.find((e) => e.date === dateString);
+    setCurrentDate(dateString);
+    if (existing) {
+      setCurrentTitle(existing.title);
+      setCurrentMood(existing.mood);
+      setCurrentBodyHtml(existing.bodyHtml);
+      setCurrentDailyWin(existing.dailyWin || "");
+      setCurrentAttachments(existing.attachments || []);
+    } else {
+      setCurrentTitle("");
+      setCurrentMood("happy");
+      setCurrentBodyHtml("");
+      setCurrentDailyWin("");
+      setCurrentAttachments([]);
+    }
+    setScreen("entry");
+    setTimeout(() => editorRef.current?.focus(), 50);
+  }
 
-      if (activeTag) {
-        const itemTags = extractTopicsAndTags(item.bodyHtml, item.title);
-        if (!itemTags.includes(activeTag)) return false;
-      }
+  function commitActiveEntry() {
+    if (!vaultData || !currentDate) return;
+    const cleanHtml = sanitizeTextContent(currentBodyHtml);
+    const existingIndex = vaultData.entries.findIndex((e) => e.date === currentDate);
+    const entriesCopy = [...vaultData.entries];
+    const targetEntry: DiaryEntry = {
+      id: existingIndex >= 0 ? entriesCopy[existingIndex].id : createId(),
+      date: currentDate,
+      title: currentTitle.trim() || "Untitled Reflection",
+      mood: currentMood,
+      bodyHtml: cleanHtml,
+      dailyWin: currentDailyWin.trim(),
+      attachments: currentAttachments,
+      createdAt: existingIndex >= 0 ? entriesCopy[existingIndex].createdAt : new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (existingIndex >= 0) {
+      entriesCopy[existingIndex] = targetEntry;
+    } else {
+      entriesCopy.push(targetEntry);
+      entriesCopy.sort((a, b) => b.date.localeCompare(a.date));
+    }
+    const updatedVault: VaultData = { ...vaultData, updatedAt: new Date().toISOString(), entries: entriesCopy };
+    saveVault(updatedVault);
+    setScreen("home");
+  }
 
-      if (expandedTerms.length > 0) {
-        return expandedTerms.some(
-          (term) =>
-            bodyClean.includes(term) ||
-            titleClean.includes(term) ||
-            dateString.includes(term)
-        );
-      }
-      return true;
-    }).sort((a, b) => b.date.localeCompare(a.date));
-  }, [entries, expandedTerms, activeTag]);
+  function discardEntryChanges() {
+    setScreen("home");
+  }
 
-  const emotionalDistribution = useMemo(() => {
-    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0 };
-    entries.forEach((e) => {
-      if (tallies[e.mood] !== undefined) tallies[e.mood]++;
-    });
-    return tallies;
-  }, [entries]);
-
-  const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
-
-  // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
-  async function handleAISubmit(e: FormEvent) {
+  // Smart Query Handler via Groq API Framework Cloud Pipelines
+  async function handleAISearchSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    if (!searchQuery.trim() || !vaultData) return;
 
     setIsSearchingAI(true);
-    setAiAnswer("Thinking through your timeline memory...");
+    setAiAnswer("");
+
     try {
-      const response = await smartAISearch(searchQuery, entries);
-      setAiAnswer(response);
+      const reasoningResult = await smartAISearch(searchQuery, vaultData.entries);
+      setAiAnswer(reasoningResult);
     } catch (err) {
-      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
+      setAiAnswer("An error occurred executing cognitive parsing on repository blocks.");
     } finally {
       setIsSearchingAI(false);
     }
   }
 
+  // Core formatting layout properties computed values
+  const structuredMetrics = useMemo(() => {
+    if (!vaultData) return { totalWords: 0, streak: 0, count: 0 };
+    let totalWords = 0;
+    vaultData.entries.forEach((e) => {
+      const text = e.bodyHtml.replace(/<\/?[^>]+(>|$)/g, "");
+      totalWords += text.trim().split(/\s+/).filter(Boolean).length;
+    });
+    let currentStreak = 0;
+    const sortedDates = [...vaultData.entries].map((e) => e.date).sort((a, b) => b.localeCompare(a));
+    if (sortedDates.length > 0) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+      if (sortedDates[0] === todayStr || sortedDates[0] === yesterdayStr) {
+        currentStreak = 1;
+        let checkDate = new Date(sortedDates[0]);
+        for (let i = 1; i < sortedDates.length; i++) {
+          checkDate.setDate(checkDate.getDate() - 1);
+          const expected = checkDate.toISOString().split("T")[0];
+          if (sortedDates[i] === expected) {
+            currentStreak++;
+          } else if (sortedDates[i] < expected) {
+            break;
+          }
+        }
+      }
+    }
+    return { totalWords, streak: currentStreak, count: vaultData.entries.length };
+  }, [vaultData]);
+
+  const filteredTimelineEntries = useMemo(() => {
+    if (!vaultData) return [];
+    return vaultData.entries.filter((entry) => {
+      if (screen === "year") {
+        return entry.date.startsWith(`${selectedYear}-`);
+      }
+      const cleanBody = entry.bodyHtml.replace(/<\/?[^>]+(>|$)/g, "").toLowerCase();
+      const query = searchQuery.toLowerCase();
+      return (
+        entry.title.toLowerCase().includes(query) ||
+        entry.date.includes(query) ||
+        cleanBody.includes(query) ||
+        (entry.dailyWin && entry.dailyWin.toLowerCase().includes(query))
+      );
+    });
+  }, [vaultData, searchQuery, selectedYear, screen]);
+
+  const groupedYearOverview = useMemo(() => {
+    const months = Array.from({ length: 12 }, (_, i) => ({
+      name: new Date(2000, i, 1).toLocaleString("default", { month: "long" }),
+      index: String(i + 1).padStart(2, "0"),
+      days: [] as { date: string; entry?: DiaryEntry }[],
+    }));
+    months.forEach((m) => {
+      const daysInMonth = new Date(selectedYear, Number(m.index), 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dStr = String(d).padStart(2, "0");
+        const dateKey = `${selectedYear}-${m.index}-${dStr}`;
+        const found = vaultData?.entries.find((e) => e.date === dateKey);
+        m.days.push({ date: dateKey, entry: found });
+      }
+    });
+    return months;
+  }, [vaultData, selectedYear]);
+
+  // Document attachment media encoding pipelines
+  function handleFileSelection(e: ChangeEvent<HTMLInputElement>) {
+    if (!e.target.files?.length) return;
+    filesToAttachments(e.target.files)
+      .then((newAttachments) => {
+        setCurrentAttachments((prev) => [...prev, ...newAttachments]);
+      })
+      .catch((err) => alert(err.message))
+      .finally(() => {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      });
+  }
+
+  function removeAttachment(id: string) {
+    setCurrentAttachments((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  // HTML Rich Input Action Scripts
+  function applyTextStyle(command: string, value = "") {
+    document.execCommand(command, false, value);
+    if (editorRef.current) {
+      setCurrentBodyHtml(editorRef.current.innerHTML);
+    }
+  }
+
+  if (syncState === "locked") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4 relative overflow-hidden font-sans">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-cyan-600/10 rounded-full blur-3xl animate-pulse delay-700" />
+        <div className="w-full max-w-md p-8 rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl relative z-10 text-center">
+          <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-gradient-to-tr from-purple-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-purple-500/20">
+            <svg className="w-8 h-8 text-white animate-spin-slow" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-extrabold text-white tracking-tight mb-2">Moonlit Vault</h1>
+          <p className="text-sm text-slate-400 mb-8">Decentralized Multi-Device Personal Journal Layer</p>
+          <div className="space-y-4">
+            <input
+              type="password"
+              placeholder="Enter Private Encryption Key..."
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && loadVault()}
+              className="w-full px-5 py-4 rounded-xl bg-slate-900/80 border border-white/10 text-white placeholder-slate-500 text-center focus:outline-none focus:border-purple-500 transition-all shadow-inner focus:ring-1 focus:ring-purple-500"
+            />
+            <button
+              onClick={loadVault}
+              disabled={!password.trim()}
+              className="w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 active:scale-[0.99] transition-all shadow-lg shadow-purple-900/30 disabled:opacity-40 disabled:pointer-events-none"
+            >
+              Decrypt Vault Space
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (syncState === "loading") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white font-sans">
+        <div className="relative w-20 h-20 mb-6">
+          <div className="absolute inset-0 rounded-full border-4 border-purple-500/20" />
+          <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 animate-spin" />
+        </div>
+        <p className="text-sm tracking-widest uppercase text-purple-400 font-semibold animate-pulse">Syncing with GitHub File Systems...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
-      <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
-        
-        <div className="space-y-2">
-          <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
-          <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
-          <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively.
-          </p>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col relative overflow-x-hidden selection:bg-purple-500/30 selection:text-white font-sans">
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[300px] bg-gradient-to-b from-purple-900/10 to-transparent blur-3xl pointer-events-none" />
+
+      {/* Primary Workspace Navigation Shell Banner */}
+      <header className="sticky top-0 z-30 border-b border-white/5 bg-slate-950/80 backdrop-blur-md px-4 py-4 max-w-7xl w-full mx-auto flex items-center justify-between">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => { setScreen("home"); setSearchQuery(""); setAiAnswer(""); }}>
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-500 to-cyan-500 flex items-center justify-center shadow-md shadow-purple-500/10">
+            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-lg font-bold tracking-tight text-white">Moonlit Vault</h2>
+            <div className="flex items-center gap-1.5">
+              <span className={cn("w-2 h-2 rounded-full", syncState === "ready" || syncState === "saved" ? "bg-emerald-400 animate-pulse" : "bg-amber-400 animate-bounce")} />
+              <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">
+                {syncState === "ready" && "Secured Serverless Live"}
+                {syncState === "saving" && "Encrypting Storage Payload..."}
+                {syncState === "saved" && "Changes Pushed to GitHub"}
+                {syncState === "error" && "Database Network Sync Failure"}
+              </span>
+            </div>
+          </div>
         </div>
 
-        {/* Input box form element overlay wrapper */}
-        <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
-          <span className="text-xl text-slate-500">🔍</span>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
-          />
-          {searchQuery && (
-            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">
-              Clear
-            </button>
-          )}
+        <nav className="flex items-center gap-2">
           <button
-            type="submit"
-            disabled={isSearchingAI || !searchQuery.trim()}
-            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40"
+            onClick={() => { setScreen("home"); setSearchQuery(""); setAiAnswer(""); }}
+            className={cn("p-2.5 rounded-xl transition-all", screen === "home" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:bg-white/5 hover:text-slate-200")}
+            title="Dashboard Overview"
           >
-            {isSearchingAI ? "Thinking..." : "Ask AI Brain"}
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+            </svg>
           </button>
-        </form>
+          <button
+            onClick={() => setScreen("year")}
+            className={cn("p-2.5 rounded-xl transition-all", screen === "year" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:bg-white/5 hover:text-slate-200")}
+            title="Yearly Matrix View"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 002-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setScreen("ai")}
+            className={cn("p-2.5 rounded-xl transition-all", screen === "ai" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:bg-white/5 hover:text-slate-200")}
+            title="AI Cognitive Engine Search"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => { setVaultData(null); setPassword(""); setSyncState("locked"); }}
+            className="p-2.5 rounded-xl text-rose-400 hover:bg-rose-500/10 transition-all ml-2"
+            title="Lock Vault File"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </button>
+        </nav>
+      </header>
 
-        {/* Dynamic expansion status indicators */}
-        {expandedTerms.length > 0 && (
-          <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
-            <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
-            {expandedTerms.map((t) => (
-              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
+      {/* Main Container Viewport Stage */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 relative z-10">
+        {screen === "home" && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Context Analytical Statistical Dash */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="p-5 rounded-2xl border border-white/5 bg-white/5 shadow-sm backdrop-blur-md">
+                <p className="text-xs font-semibold uppercase text-slate-400 tracking-wider mb-1">Total Reflections</p>
+                <p className="text-3xl font-black text-white">{structuredMetrics.count}</p>
+              </div>
+              <div className="p-5 rounded-2xl border border-white/5 bg-white/5 shadow-sm backdrop-blur-md">
+                <p className="text-xs font-semibold uppercase text-slate-400 tracking-wider mb-1">Current Writing Streak</p>
+                <p className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500">{structuredMetrics.streak} {structuredMetrics.streak === 1 ? "Day" : "Days"}</p>
+              </div>
+              <div className="p-5 rounded-2xl border border-white/5 bg-white/5 shadow-sm backdrop-blur-md">
+                <p className="text-xs font-semibold uppercase text-slate-400 tracking-wider mb-1">Total Encrypted Words</p>
+                <p className="text-3xl font-black text-white">{structuredMetrics.totalWords.toLocaleString()}</p>
+              </div>
+              <button
+                onClick={() => openEntry(new Date().toISOString().split("T")[0])}
+                className="p-5 rounded-2xl bg-gradient-to-tr from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white font-bold flex flex-col justify-between shadow-lg shadow-purple-900/20 group relative overflow-hidden text-left"
+              >
+                <div className="absolute top-0 right-0 p-8 bg-white/10 rounded-full blur-xl translate-x-4 -translate-y-4 group-hover:scale-125 transition-all" />
+                <span className="text-xs uppercase tracking-wider opacity-80">Capture Today</span>
+                <div className="flex items-center gap-2 mt-4 text-lg font-black">
+                  <span>Write Reflection</span>
+                  <svg className="w-5 h-5 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                  </svg>
+                </div>
+              </button>
+            </div>
 
-        {/* Selected tag constraint badge overlay */}
-        {activeTag && (
-          <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
-            <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
-            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
-              Remove Filter
-            </button>
-          </div>
-        )}
+            {/* Standard Keywords Inline Filter Panel */}
+            <div className="relative">
+              <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0x" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search index keywords, headings, timestamps..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-12 pr-4 py-4 rounded-xl bg-white/5 border border-white/5 text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 transition-all backdrop-blur-md text-sm"
+              />
+            </div>
 
-        {/* REASONED AI RESPONSE BLOCK: Renders summary card directly inside existing UI */}
-        {aiAnswer && (
-          <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
-            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
-          </div>
-        )}
+            {/* Vertical History Feed Log View */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-slate-400">Chronological Archive Flow</h3>
+                {searchQuery && <span className="text-xs text-slate-500">Found {filteredTimelineEntries.length} matching logs</span>}
+              </div>
 
-        {/* Filter Output List Area */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between border-b border-white/5 pb-2">
-            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
-            <span className="text-xs text-slate-600">Click entry row to jump instantly to document layout editor</span>
-          </div>
-
-          {filteredEntries.length > 0 ? (
-            <div className="space-y-2.5 max-h-[32rem] overflow-y-auto pr-1">
-              {filteredEntries.map((item) => {
-                const option = MOOD_BY_ID[item.mood];
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onJumpToEntry(item.date)}
-                    className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group"
-                  >
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">
-                          {item.date}
-                        </span>
-                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">
-                          {item.title}
-                        </h4>
+              {filteredTimelineEntries.length === 0 ? (
+                <div className="text-center py-16 rounded-2xl border border-dashed border-white/5 bg-white/[0.01]">
+                  <svg className="w-10 h-10 mx-auto mb-3 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0a2 2 0 01-2 2H6a2 2 0 01-2-2m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-4M4 13h4m1.5 8h3.5c.83 0 1.5-.67 1.5-1.5V17M10 5l2 2 2-2" />
+                  </svg>
+                  <p className="text-slate-400 text-sm font-medium">No decrypted logs fit your current navigation filters.</p>
+                </div>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {filteredTimelineEntries.map((entry) => {
+                    const mood = MOODS.find((m) => m.id === entry.mood) || MOODS[0];
+                    const plainBody = entry.bodyHtml.replace(/<\/?[^>]+(>|$)/g, "");
+                    const formattedDisplayDate = new Date(entry.date).toLocaleDateString("en-US", {
+                      year: "numeric", month: "short", day: "numeric"
+                    });
+                    return (
+                      <div
+                        key={entry.id}
+                        onClick={() => openEntry(entry.date)}
+                        className="group p-5 rounded-2xl border border-white/5 bg-slate-900/40 hover:bg-slate-900/80 hover:border-white/10 transition-all cursor-pointer flex flex-col justify-between relative shadow-sm hover:shadow-md"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-xs font-mono font-semibold text-slate-500 tracking-tight group-hover:text-slate-400 transition-colors">{formattedDisplayDate}</span>
+                            <div className={cn("w-2.5 h-2.5 rounded-full bg-gradient-to-tr shadow-sm", mood.color, mood.glow)} title={mood.label} />
+                          </div>
+                          <h4 className="text-base font-bold text-white group-hover:text-purple-400 transition-colors mb-2 line-clamp-1">{entry.title}</h4>
+                          <p className="text-xs text-slate-400 line-clamp-3 leading-relaxed mb-4">{plainBody || "Empty reflection context..."}</p>
+                        </div>
+                        {entry.dailyWin && (
+                          <div className="mt-2 pt-3 border-t border-white/5 flex items-start gap-2 text-[11px] text-amber-400/90 leading-tight">
+                            <span className="mt-0.5">🏆</span>
+                            <span className="line-clamp-1 italic">{entry.dailyWin}</span>
+                          </div>
+                        )}
                       </div>
-                      <p className="text-xs text-slate-400 truncate max-w-xl">
-                        {htmlToText(item.bodyHtml)}
-                      </p>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {screen === "year" && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Year View Slider Controller Selector */}
+            <div className="flex items-center justify-between p-4 rounded-2xl border border-white/5 bg-white/5 backdrop-blur-md">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">Yearly Matrix Landscape</h3>
+              <div className="flex items-center gap-4">
+                <button onClick={() => setSelectedYear((y) => y - 1)} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white">◀</button>
+                <span className="text-xl font-black text-white tracking-wider font-mono">{selectedYear}</span>
+                <button onClick={() => setSelectedYear((y) => y + 1)} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white">▶</button>
+              </div>
+            </div>
+
+            {/* Matrix Block Rendering Grid */}
+            <div className="space-y-6">
+              {groupedYearOverview.map((month) => {
+                const filledCount = month.days.filter((d) => d.entry).length;
+                return (
+                  <div key={month.index} className="p-4 rounded-2xl border border-white/5 bg-slate-900/20 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-300 tracking-wide">{month.name}</span>
+                      <span className="text-slate-500 font-mono font-medium">{filledCount} Logs captured</span>
                     </div>
-                    
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-slate-500 hidden sm:inline">
-                        {detectSentimentLabel(item.bodyHtml)}
-                      </span>
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
+                    <div className="flex flex-wrap gap-1.5">
+                      {month.days.map((day) => {
+                        const mId = day.entry?.mood;
+                        const matchedMood = mId ? MOODS.find((m) => m.id === mId) : null;
+                        const dayNum = day.date.split("-")[2];
+                        return (
+                          <div
+                            key={day.date}
+                            onClick={() => openEntry(day.date)}
+                            className={cn(
+                              "w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-mono font-bold cursor-pointer transition-all border",
+                              day.entry 
+                                ? `bg-gradient-to-tr text-white border-transparent shadow-sm ${matchedMood?.color}`
+                                : "bg-white/[0.02] text-slate-600 border-white/5 hover:border-slate-700 hover:text-slate-400"
+                            )}
+                            title={day.entry ? `[${day.date}] ${day.entry.title}` : `No entry for ${day.date}`}
+                          >
+                            {dayNum}
+                          </div>
+                        );
+                      })}
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
-          ) : (
-            <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
-              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
-            </div>
-          )}
-        </div>
-      </div>
-
-      <aside className="space-y-4 animate-float-in">
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
-            <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated textual weight scores.</p>
           </div>
+        )}
 
-          <div className="space-y-3 pt-2">
-            {MOODS.map((m) => {
-              const count = emotionalDistribution[m.id] || 0;
-              const normalizedPct = (count / maxDistributionCount) * 100;
-              return (
-                <div key={m.id} className="space-y-1">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-white font-medium flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
-                      {m.label}
-                    </span>
-                    <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
-                  </div>
-                  <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${normalizedPct}%`,
-                        backgroundColor: m.color,
-                        boxShadow: `0 0 10px ${m.glow}`,
-                      }}
-                    />
+        {screen === "ai" && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Context Header Info Block */}
+            <div className="p-6 rounded-3xl border border-purple-500/10 bg-gradient-to-br from-purple-950/20 to-transparent relative overflow-hidden">
+              <div className="absolute -right-10 -top-10 w-40 h-40 bg-purple-500/10 rounded-full blur-2xl" />
+              <h3 className="text-lg font-black text-white mb-1 flex items-center gap-2">
+                <span>Cognitive Timeline Logic Interface</span>
+                <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-400 text-[10px] font-bold uppercase tracking-wider">Llama 3.1 8B</span>
+              </h3>
+              <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+                Unlike primitive keyword searches, this layer performs semantic temporal deductions over your complete encrypted journal history. It decodes mixed languages (Hinglish), converts shorthand slang, and extracts direct objective conclusions across chronological timelines.
+              </p>
+            </div>
+
+            {/* Smart Intelligent Chat Input Stage */}
+            <form onSubmit={handleAISearchSubmit} className="space-y-3">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Ask timeline questions: 'When did I catch up with X?', 'What was my mindset around last July?'..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-5 pr-16 py-5 rounded-2xl bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 text-sm shadow-inner backdrop-blur-md"
+                />
+                <button
+                  type="submit"
+                  disabled={isSearchingAI || !searchQuery.trim()}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white transition-all disabled:opacity-40 disabled:pointer-events-none shadow-md"
+                >
+                  {isSearchingAI ? (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </form>
+
+            {/* AI Answer Visualization Display Block */}
+            {aiAnswer && (
+              <div className="p-5 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-inner animate-slideUp">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                  AI Cognitive Brain Conclusion
+                </h4>
+                <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+                  <AIResponseRenderer 
+                    text={aiAnswer} 
+                    onDateClick={(isoDateStr) => {
+                      // Seamless redirection back into deep entry vault workspace state structures
+                      openEntry(isoDateStr);
+                    }} 
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {screen === "entry" && (
+          <div className="grid lg:grid-cols-3 gap-8 items-start animate-fadeIn">
+            {/* Left Multi-Field Secondary Meta Details */}
+            <div className="space-y-6 lg:col-span-1">
+              {/* Dynamic Contextual Brain Prompt Card Box */}
+              <div className="p-5 rounded-2xl border border-white/5 bg-gradient-to-br from-slate-900/60 to-slate-900/20 shadow-sm backdrop-blur-md">
+                <div className="flex items-center gap-2 mb-2 text-xs font-bold uppercase tracking-wider text-purple-400">
+                  <span>Assistant Writing Prompt</span>
+                </div>
+                <p className="text-xs text-slate-300 leading-relaxed italic">"{aiPromptQuestion}"</p>
+              </div>
+
+              {/* Immutable Navigation Context Title Banner */}
+              <div className="p-5 rounded-2xl border border-white/5 bg-slate-900/40 space-y-4">
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">Reflection File Stamp</label>
+                  <input
+                    type="date"
+                    value={currentDate}
+                    onChange={(e) => setCurrentDate(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-white/5 text-sm font-mono font-bold text-slate-300 focus:outline-none focus:border-purple-500 transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">Vibe Alignment Spectrum</label>
+                  <div className="space-y-2">
+                    {MOODS.map((m) => {
+                      const isSelected = currentMood === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setCurrentMood(m.id)}
+                          className={cn(
+                            "w-full px-4 py-3 rounded-xl text-left text-xs font-bold transition-all border flex items-center justify-between group",
+                            isSelected
+                              ? `bg-gradient-to-r text-white border-transparent shadow-md ${m.color}`
+                              : "bg-slate-950 text-slate-400 border-white/5 hover:border-white/10 hover:text-slate-200"
+                          )}
+                        >
+                          <div className="flex flex-col">
+                            <span>{m.label}</span>
+                            <span className={cn("text-[10px] font-normal mt-0.5 max-w-[200px] line-clamp-1", isSelected ? "text-white/80" : "text-slate-500 group-hover:text-slate-400")}>{m.description}</span>
+                          </div>
+                          {isSelected && <span className="text-sm">✓</span>}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </section>
+              </div>
 
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
-            <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
-          </div>
-
-          {globalTopicCloud.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 pt-2">
-              {globalTopicCloud.map((tag) => (
+              {/* Core Execution Operations Bar Container */}
+              <div className="p-4 rounded-2xl border border-white/5 bg-slate-900/40 grid grid-cols-2 gap-3">
                 <button
-                  key={tag.text}
-                  type="button"
-                  onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
-                    activeTag === tag.text
-                      ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
-                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
-                  )}
+                  onClick={discardEntryChanges}
+                  className="py-3 px-4 rounded-xl text-xs font-bold bg-white/5 hover:bg-white/10 text-slate-300 active:scale-[0.98] transition-all text-center"
                 >
-                  #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
+                  Discard Changes
                 </button>
-              ))}
+                <button
+                  onClick={commitActiveEntry}
+                  className="py-3 px-4 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white shadow-md active:scale-[0.98] transition-all text-center"
+                >
+                  Save Reflection
+                </button>
+              </div>
             </div>
-          ) : (
-            <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
-          )}
-        </section>
 
-        <MoodLegend />
-      </aside>
-    </div>
-  );
-}
+            {/* Right Rich Editor Core Flow Workspace Stage */}
+            <div className="lg:col-span-2 space-y-6">
+              <input
+                type="text"
+                placeholder="Name your reflection headspace..."
+                value={currentTitle}
+                onChange={(e) => setCurrentTitle(e.target.value)}
+                className="w-full bg-transparent border-b border-white/5 pb-3 text-2xl font-black text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-colors tracking-tight"
+              />
 
-function MoodLegend() {
-  return (
-    <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
-      <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood colors</p>
-      <div className="mt-4 grid gap-3">
-        {MOODS.map((mood) => (
-          <div key={mood.id} className="flex items-center gap-3 text-sm text-slate-300">
-            <span className="h-3 w-3 rounded-full" style={{ backgroundColor: mood.color, boxShadow: `0 0 16px ${mood.glow}` }} />
-            <span className="font-medium text-white">{mood.label}</span>
-            <span className="text-slate-500">{mood.description}</span>
+              {/* Rich-Text Control Actions Toolbelt */}
+              <div className="flex flex-wrap items-center gap-1 p-2 rounded-xl border border-white/5 bg-slate-900/60 backdrop-blur-md">
+                <button type="button" onClick={() => applyTextStyle("bold")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white font-bold text-sm min-w-[32px]">B</button>
+                <button type="button" onClick={() => applyTextStyle("italic")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white italic text-sm min-w-[32px]">I</button>
+                <button type="button" onClick={() => applyTextStyle("underline")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white underline text-sm min-w-[32px]">U</button>
+                <button type="button" onClick={() => applyTextStyle("strikeThrough")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white line-through text-sm min-w-[32px]">S</button>
+                <div className="w-px h-4 bg-white/10 mx-1" />
+                <button type="button" onClick={() => applyTextStyle("insertUnorderedList")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white text-xs font-bold">● List</button>
+                <button type="button" onClick={() => applyTextStyle("insertOrderedList")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white text-xs font-bold">1. List</button>
+                <div className="w-px h-4 bg-white/10 mx-1" />
+                <button type="button" onClick={() => { const link = prompt("Enter complete destination target URL:"); if (link) applyTextStyle("createLink", link); }} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white text-xs font-bold">Link</button>
+                <button type="button" onClick={() => applyTextStyle("unlink")} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-rose-400 text-xs font-bold">Unlink</button>
+              </div>
+
+              {/* HTML Target Canvas Interactive Field */}
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={(e) => setCurrentBodyHtml(e.currentTarget.innerHTML)}
+                dangerouslySetInnerHTML={{ __html: currentBodyHtml }}
+                className="w-full min-h-[350px] p-6 rounded-2xl bg-white/[0.01] border border-white/5 focus:outline-none focus:border-white/10 transition-colors text-slate-200 text-base leading-relaxed overflow-y-auto placeholder:text-slate-600 focus:ring-1 focus:ring-white/5"
+                placeholder="Begin unrolling your stream of consciousness safely inside this isolated sandboxed canvas field area..."
+                style={{ outline: "none" }}
+              />
+
+              {/* Dedicated Focus Section: The Daily Win */}
+              <div className="p-5 rounded-2xl border border-amber-500/10 bg-amber-500/[0.01] space-y-2">
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-amber-400/90 flex items-center gap-1">
+                  <span>🏆 Main Win Matrix Objective</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="What went right? If nothing else, what single micro win anchor defined today?"
+                  value={currentDailyWin}
+                  onChange={(e) => setCurrentDailyWin(e.target.value)}
+                  className="w-full bg-transparent border-b border-white/5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500/40 transition-colors"
+                />
+              </div>
+
+              {/* Media Stream Vault Attachment Grid Management Modules */}
+              <div className="p-5 rounded-2xl border border-white/5 bg-slate-900/20 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Secure Embedded Attachments</h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Media assets are compiled directly into your encrypted bundle payload stream</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-200 transition-colors"
+                  >
+                    Attach Media
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    onChange={handleFileSelection}
+                    className="hidden"
+                    accept="image/*,application/pdf"
+                  />
+                </div>
+
+                {currentAttachments.length === 0 ? (
+                  <p className="text-xs text-slate-600 italic py-2">No documents, receipts, or photos embedded inside this timeline node element yet.</p>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {currentAttachments.map((file) => (
+                      <div key={file.id} className="p-3 rounded-xl bg-slate-950 border border-white/5 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-slate-300 truncate" title={file.name}>{file.name}</p>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-mono">{formatBytes(file.size)} • {file.type.split("/")[1]?.toUpperCase() || "BIN"}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {file.type.startsWith("image/") && (
+                            <a href={file.dataUrl} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-white/5 text-slate-400 hover:text-cyan-400 transition-colors" title="View asset file">
+                              👁
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeAttachment(file.id)}
+                            className="p-1.5 rounded-md hover:bg-rose-500/10 text-slate-500 hover:text-rose-400 transition-colors"
+                            title="Strip file from entry node"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {currentAttachments.length > 0 && (
+                  <div className="text-[10px] font-mono text-slate-500 text-right pt-1">
+                    Combined Asset Array Footprint: {formatBytes(totalAttachmentBytes(currentAttachments))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function MoodChip({ mood }: { mood: MoodId }) {
-  const option = MOOD_BY_ID[mood];
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 py-2 text-sm text-slate-200">
-      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: option.color, boxShadow: `0 0 16px ${option.glow}` }} />
-      {option.label}
-    </span>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="block space-y-2">
-      <span className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function SyncError({ message, compact }: { message: string; compact?: boolean }) {
-  return (
-    <div
-      className={cn(
-        "rounded-2xl border border-rose-300/20 bg-rose-500/10 text-sm leading-6 text-rose-100 shadow-2xl shadow-rose-950/20 backdrop-blur-xl",
-        compact ? "mt-4 px-4 py-3" : "mb-5 px-5 py-4",
-      )}
-    >
-      {message}
+        )}
+      </main>
     </div>
   );
 }
 
-function AmbientBackdrop() {
-  return (
-    <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="aurora-orb aurora-orb-a" />
-      <div className="aurora-orb aurora-orb-b" />
-      <div className="aurora-orb aurora-orb-c" />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_32%),linear-gradient(180deg,rgba(2,3,10,0)_0%,rgba(2,3,10,0.72)_78%,#02030a_100%)]" />
-      <div className="absolute inset-0 opacity-[0.12] [background-image:linear-gradient(rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:72px_72px]" />
-    </div>
-  );
-}
+// Low-level text sanitization layout filters
+function sanitizeTextContent(dirtyHtml: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(dirtyHtml, "text/html");
+  const template = doc.body;
 
-function createEmptyVault(): VaultData {
-  return {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    entries: [],
-  };
-}
+  const allowedTags = ["B", "I", "U", "STRIKE", "UL", "OL", "LI", "A", "BR", "DIV", "P", "SPAN"];
+  const allElements = template.querySelectorAll("*");
 
-// ... unchanged core KDF helper configurations ...
-function loadStoredConfig(): GitHubConfig | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
-    if (!raw) return null;
-    return { ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<GitHubConfig>) };
-  } catch {
-    return null;
-  }
-}
-
-function normalizeConfig(config: GitHubConfig): GitHubConfig {
-  return {
-    owner: config.owner.trim(),
-    repo: config.repo.trim(),
-    branch: config.branch.trim() || "main",
-    path: config.path.trim().replace(/^\/+/, "") || DEFAULT_CONFIG.path,
-    token: config.token.trim(),
-  };
-}
-
-async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveVaultKey(passphrase, salt, PBKDF2_ITERATIONS);
-  const plaintext = new TextEncoder().encode(JSON.stringify(vault));
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
-  const file: EncryptedVaultFile = {
-    kind: "moonlit-diary-encrypted-vault",
-    version: 1,
-    crypto: {
-      name: "AES-GCM",
-      kdf: "PBKDF2",
-      hash: "SHA-256",
-      iterations: PBKDF2_ITERATIONS,
-      salt: bytesToBase64(salt),
-      iv: bytesToBase64(iv),
-    },
-    payload: bytesToBase64(new Uint8Array(encrypted)),
-  };
-
-  return JSON.stringify(file, null, 2);
-}
-
-async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: string): Promise<VaultData> {
-  if (isEncryptedVaultFile(file)) {
-    const salt = base64ToBytes(file.crypto.salt);
-    const iv = base64ToBytes(file.crypto.iv);
-    const encrypted = base64ToBytes(file.payload);
-    const key = await deriveVaultKey(passphrase, salt, file.crypto.iterations);
-
-    try {
-      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
-      return normalizeVault(JSON.parse(new TextDecoder().decode(decrypted)) as VaultData);
-    } catch {
-      throw new Error("Could not unlock the vault. Check your passphrase.");
-    }
-  }
-
-  return normalizeVault(file);
-}
-
-function isEncryptedVaultFile(file: EncryptedVaultFile | VaultData): file is EncryptedVaultFile {
-  return "kind" in file && file.kind === "moonlit-diary-encrypted-vault";
-}
-
-function normalizeVault(vault: VaultData): VaultData {
-  return {
-    version: 1,
-    updatedAt: vault.updatedAt || new Date().toISOString(),
-    entries: Array.isArray(vault.entries) ? vault.entries : [],
-  };
-}
-
-async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: number) {
-  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
-  const saltBuffer = new Uint8Array(salt).buffer as ArrayBuffer;
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: saltBuffer, iterations, hash: "SHA-256" },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
-async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
-  const response = await fetch(gitHubContentUrl(config), {
-    headers: githubHeaders(config),
-  });
-
-  if (response.status === 404) {
-    return { exists: false, sha: null, text: "" };
-  }
-
-  if (!response.ok) {
-    throw new Error(await githubErrorMessage(response));
-  }
-
-  const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
-  if (data.content && data.encoding === "base64") {
-    return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
-  }
-
-  if (data.download_url) {
-    const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
-    if (!rawResponse.ok) {
-      throw new Error(await githubErrorMessage(rawResponse));
-    }
-    return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
-  }
-
-  return { exists: true, sha: data.sha ?? null, text: "" };
-}
-
-async function putGitHubVaultFile(
-  config: GitHubConfig,
-  text: string,
-  sha: string | null,
-  message: string,
-): Promise<{ sha: string | null }> {
-  const body: { message: string; content: string; branch: string; sha?: string } = {
-    message,
-    content: stringToBase64(text),
-    branch: config.branch,
-  };
-
-  if (sha) {
-    body.sha = sha;
-  }
-
-  const response = await fetch(gitHubContentUrl(config), {
-    method: "PUT",
-    headers: githubHeaders(config),
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(await githubErrorMessage(response));
-  }
-
-  const data = (await response.json()) as { content?: { sha?: string } };
-  return { sha: data.content?.sha ?? null };
-}
-
-function gitHubContentUrl(config: GitHubConfig) {
-  const encodedPath = config.path.split("/").map(encodeURIComponent).join("/");
-  return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}`;
-}
-
-function githubHeaders(config: GitHubConfig): HeadersInit {
-  return {
-    Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${config.token}`,
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-}
-
-async function githubErrorMessage(response: Response) {
-  try {
-    const data = (await response.json()) as { message?: string };
-    return `GitHub ${response.status}: ${data.message ?? response.statusText}`;
-  } catch {
-    return `GitHub ${response.status}: ${response.statusText}`;
-  }
-}
-
-function stringToBase64(value: string) {
-  return bytesToBase64(new TextEncoder().encode(value));
-}
-
-function base64ToString(value: string) {
-  return new TextDecoder().decode(base64ToBytes(value));
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function dateToKey(date: Date) {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function keyToDate(key: string) {
-  const [year, month, day] = key.split("-").map(Number);
-  return new Date(year, month - 1, day);
-}
-
-function extractTopicsAndTags(html: string, title: string): string[] {
-  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
-  const foundTags = new Set<string>();
-
-  const hashMatches = combinedText.match(/#\w+/g);
-  if (hashMatches) {
-    hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
-  }
-
-  if (combinedText.includes("alex")) foundTags.add("alex");
-  if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
-  if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
-  if (combinedText.includes("gym") || combinedText.includes("workout") || combinedText.includes("run")) foundTags.add("fitness");
-  if (combinedText.includes("coding") || combinedText.includes("code") || combinedText.includes("app")) foundTags.add("dev");
-  if (combinedText.includes("family") || combinedText.includes("home") || combinedText.includes("parents")) foundTags.add("family");
-
-  return Array.from(foundTags);
-}
-
-function detectSentimentLabel(html: string): string {
-  const plainText = htmlToText(html).toLowerCase();
-  if (!plainText || plainText.length < 5) return "Neutral Focus";
-
-  let positiveScore = 0;
-  let heavyScore = 0;
-
-  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
-  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
-
-  positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
-  heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
-
-  if (positiveScore > heavyScore) return "Energetic & Bright";
-  if (heavyScore > positiveScore) return "Reflective & Introspective";
-  return "Balanced Reflection";
-}
-
-function addMonths(date: Date, amount: number) {
-  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
-}
-
-function formatDateLong(key: string) {
-  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(keyToDate(key));
-}
-
-// ... unchanged math matrices/string sanitizers ...
-function buildMonthCells(monthDate: Date) {
-  const year = monthDate.getFullYear();
-  const month = monthDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const gridStart = new Date(year, month, 1 - firstDay.getDay());
-
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
-    return {
-      date,
-      dateKey: dateToKey(date),
-      day: date.getDate(),
-      inCurrentMonth: date.getMonth() === month,
-    };
-  });
-}
-
-function createId() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function htmlToText(html: string) {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function sanitizeHtml(html: string) {
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
-
-  const allowedTags = new Set(["A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "H1", "H2", "H3", "I", "LI", "OL", "P", "SPAN", "STRONG", "U", "UL"]);
-  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
-  const elements: Element[] = [];
-  while (walker.nextNode()) {
-    elements.push(walker.currentNode as Element);
-  }
-
-  elements.forEach((element) => {
-    if (!allowedTags.has(element.tagName)) {
-      const wrapper = document.createElement("span");
-      wrapper.innerHTML = element.innerHTML;
-      element.replaceWith(...Array.from(wrapper.childNodes));
+  allElements.forEach((element) => {
+    if (!allowedTags.includes(element.tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
       return;
     }
 
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase();
-      const isSafeLinkAttribute = element.tagName === "A" && ["href", "target", "rel"].includes(name);
-      if (name.startsWith("on") || name === "style" || !isSafeLinkAttribute) {
-        element.removeAttribute(attribute.name);
+    const attributes = Array.from(element.attributes);
+    attributes.forEach((attribute) => {
+      if (element.tagName === "A" && attribute.name === "href") {
+        return;
       }
+      element.removeAttribute(attribute.name);
     });
 
     if (element.tagName === "A") {
@@ -2063,12 +1043,6 @@ function filesToAttachments(files: FileList) {
           };
           reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
           reader.readAsDataURL(file);
-        }),
-    ),
-  );
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return "Something went wrong.";
+        })
+    );
 }

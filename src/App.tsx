@@ -129,6 +129,64 @@ const SEMANTIC_DICTIONARY: Record<string, string[]> = {
   stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
 };
 
+interface AIResponseRendererProps {
+  text: string;
+  onDateClick: (isoDateStr: string) => void;
+}
+
+/**
+ * Converts "1st july 2026" or "22nd june 2026" into standard "2026-07-01" or "2026-06-22"
+ */
+function parseReadableDateToISO(readableDate: string): string {
+  const clean = readableDate.toLowerCase().trim();
+  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
+  
+  if (!match) return readableDate; // Fallback to raw text if it doesn't match
+  
+  const day = match[1].padStart(2, '0');
+  const monthName = match[2];
+  const year = match[3];
+  
+  const months: Record<string, string> = {
+    january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
+    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+  };
+  
+  const month = months[monthName] || '01';
+  return `${year}-${month}-${day}`;
+}
+
+export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
+  // Regex looks for patterns like [1st july 2026] or [22nd june 2026]
+  const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
+  const parts = text.split(dateRegex);
+
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (dateRegex.test(part)) {
+          // Strip out the brackets to isolate the words "1st july 2026"
+          const rawReadableDate = part.replace(/[\[\]]/g, "");
+          // Convert it into the machine format "2026-07-01"
+          const isoDate = parseReadableDateToISO(rawReadableDate);
+          
+          return (
+            <button
+              key={index}
+              onClick={() => onDateClick(isoDate)}
+              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline cursor-pointer transition-colors"
+              style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }}
+            >
+              {rawReadableDate}
+            </button>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </>
+  );
+}
+
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);

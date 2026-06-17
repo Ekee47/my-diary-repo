@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { cn } from "./utils/cn";
+// Import the multi-device cloud intelligence layer
+import { smartAISearch, generateAICustomQuestion } from "./aiService";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic";
 type Screen = "home" | "entry" | "year" | "ai";
@@ -765,6 +767,7 @@ function HomeView({
   );
 }
 
+// ... rest of the unchanged code (MonthlyCalendar, SyncBadge, etc.) stays exactly intact ...
 function MonthlyCalendar({
   visibleMonth,
   selectedDate,
@@ -867,36 +870,19 @@ function EntryEditor({
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
 
-  // Dynamic extracted tags compiled in real-time
   const computedTags = useMemo(() => {
     return extractTopicsAndTags(bodyHtml, title);
   }, [bodyHtml, title]);
 
-  // Lookup yesterday's context parameters to formulate privacy-first smart assistant prompts
-  function triggerAIPrompt() {
-    const activeDate = keyToDate(dateKey);
-    const yesterdayDate = new Date(activeDate.getFullYear(), activeDate.getMonth(), activeDate.getDate() - 1);
-    const yesterdayKey = dateToKey(yesterdayDate);
-    const yesterdayEntry = entryByDate.get(yesterdayKey);
-
-    if (yesterdayEntry) {
-      const yesterdayText = htmlToText(yesterdayEntry.bodyHtml).toLowerCase();
-      let themeMention = "your day yesterday";
-      if (yesterdayText.includes("work") || yesterdayText.includes("project")) themeMention = "overwhelmed with work elements";
-      if (yesterdayText.includes("beach") || yesterdayText.includes("ocean")) themeMention = "your relaxing escape to the coastal water lines";
-      if (yesterdayText.includes("alex")) themeMention = "your conversations with Alex";
-      
-      setAIPrompt(
-        `Yesterday you felt "${yesterdayEntry.mood}" and mentioned ${themeMention}. Did things clear up or change direction for you today?`
-      );
-    } else {
-      const defaultPrompts = [
-        "What is a small detail from today that you don't want to forget?",
-        "If today was a chapter in a book, what would its title be and why?",
-        "How did your energy levels shift from morning to evening today?",
-        "Was there a moment today where you felt completely locked into what you were doing?"
-      ];
-      setAIPrompt(defaultPrompts[Math.floor(Math.random() * defaultPrompts.length)]);
+  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
+  async function triggerAIPrompt() {
+    setAIPrompt("Consulting your timeline memory...");
+    try {
+      const allEntries = Array.from(entryByDate.values());
+      const customQuestion = await generateAICustomQuestion(allEntries);
+      setAIPrompt(customQuestion);
+    } catch (err) {
+      setAIPrompt("What's on your mind today? Tell me how your day went.");
     }
   }
 
@@ -963,7 +949,7 @@ function EntryEditor({
 
         {/* AI Prompt Journaling Assistant Panel widget */}
         <div className="mt-6 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.0</div>
+          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
           <div className="flex items-center justify-between gap-4">
             <div>
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
@@ -1331,7 +1317,7 @@ function MonthPixelPanel({
 }
 
 /* ==========================================================================
-   NEW WORKSPACE VIEW: DEDICATED ADVANCED AI INSIGHTS & INTEL SEARCH VIEW
+   FIXED STEP 4 WORKSPACE VIEW: INTEGRATING SECURE COGNITIVE TIMELINE SEARCH
    ========================================================================== */
 function AIIntelligenceView({
   entries,
@@ -1344,8 +1330,11 @@ function AIIntelligenceView({
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
+  
+  // NEW STATES: Capture deep timeline reasoning returns safely without storing static tokens
+  const [aiAnswer, setAiAnswer] = useState("");
+  const [isSearchingAI, setIsSearchingAI] = useState(false);
 
-  // Compile global dynamic tag weights and keyword summaries across all data files
   const globalTopicCloud = useMemo(() => {
     const frequencyMap: Record<string, number> = {};
     entries.forEach((item) => {
@@ -1359,7 +1348,6 @@ function AIIntelligenceView({
       .sort((a, b) => b.count - a.count);
   }, [entries]);
 
-  // Compute conceptual expansions (e.g. mapping search for ocean -> matches beach or coast text)
   const expandedTerms = useMemo(() => {
     const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (queries.length === 0) return [];
@@ -1369,7 +1357,6 @@ function AIIntelligenceView({
       if (SEMANTIC_DICTIONARY[q]) {
         terms.push(...SEMANTIC_DICTIONARY[q]);
       }
-      // Check inverse mappings
       Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
         if (synonyms.includes(q) && !terms.includes(key)) {
           terms.push(key);
@@ -1379,20 +1366,17 @@ function AIIntelligenceView({
     return Array.from(new Set(terms));
   }, [searchQuery]);
 
-  // Client-side intelligence filtering logic module
   const filteredEntries = useMemo(() => {
     return entries.filter((item) => {
       const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
       const titleClean = item.title.toLowerCase();
       const dateString = item.date;
 
-      // Tag selector constraints
       if (activeTag) {
         const itemTags = extractTopicsAndTags(item.bodyHtml, item.title);
         if (!itemTags.includes(activeTag)) return false;
       }
 
-      // Keyword query text matching logic
       if (expandedTerms.length > 0) {
         return expandedTerms.some(
           (term) =>
@@ -1405,7 +1389,6 @@ function AIIntelligenceView({
     }).sort((a, b) => b.date.localeCompare(a.date));
   }, [entries, expandedTerms, activeTag]);
 
-  // Mood weight trends aggregator for SVG graphs analytics calculation
   const emotionalDistribution = useMemo(() => {
     const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0 };
     entries.forEach((e) => {
@@ -1416,35 +1399,58 @@ function AIIntelligenceView({
 
   const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
 
+  // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
+  async function handleAISubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+
+    setIsSearchingAI(true);
+    setAiAnswer("Thinking through your timeline memory...");
+    try {
+      const response = await smartAISearch(searchQuery, entries);
+      setAiAnswer(response);
+    } catch (err) {
+      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
+    } finally {
+      setIsSearchingAI(false);
+    }
+  }
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px] animate-screen-in">
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
         
-        {/* Search Header Container block */}
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
           <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or conceptual keys. The intelligence processing brain matches partial fragments, tags, and conceptual synonyms (e.g., searching for "ocean" will discover entries referencing "beach").
+            Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively.
           </p>
         </div>
 
-        {/* Input box component */}
-        <div className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
+        {/* Input box form element overlay wrapper */}
+        <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
           <span className="text-xl text-slate-500">🔍</span>
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder='Try searching "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base"
+            placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
+            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
           />
           {searchQuery && (
-            <button type="button" onClick={() => setSearchQuery("")} className="text-xs text-slate-500 hover:text-white px-2">
+            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">
               Clear
             </button>
           )}
-        </div>
+          <button
+            type="submit"
+            disabled={isSearchingAI || !searchQuery.trim()}
+            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40"
+          >
+            {isSearchingAI ? "Thinking..." : "Ask AI Brain"}
+          </button>
+        </form>
 
         {/* Dynamic expansion status indicators */}
         {expandedTerms.length > 0 && (
@@ -1465,6 +1471,14 @@ function AIIntelligenceView({
             <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
               Remove Filter
             </button>
+          </div>
+        )}
+
+        {/* REASONED AI RESPONSE BLOCK: Renders summary card directly inside existing UI */}
+        {aiAnswer && (
+          <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
+            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
           </div>
         )}
 
@@ -1518,10 +1532,7 @@ function AIIntelligenceView({
         </div>
       </div>
 
-      {/* Analytics Sidebar Workspace panels */}
       <aside className="space-y-4 animate-float-in">
-        
-        {/* Sentiment breakdown analytical bar widget graphs */}
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
@@ -1557,7 +1568,6 @@ function AIIntelligenceView({
           </div>
         </section>
 
-        {/* Global Cloud Tags Module segment */}
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
@@ -1662,6 +1672,7 @@ function createEmptyVault(): VaultData {
   };
 }
 
+// ... unchanged core KDF helper configurations ...
 function loadStoredConfig(): GitHubConfig | null {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -1682,7 +1693,6 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
   };
 }
 
-// Encrypts the entire vault so GitHub stores one ciphertext JSON file, not readable diary text.
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -1869,18 +1879,15 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
-// Scans writing text patterns to categorize dynamic tag topics automatically
 function extractTopicsAndTags(html: string, title: string): string[] {
   const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
   const foundTags = new Set<string>();
 
-  // Explicit hashtag regex scanning module
   const hashMatches = combinedText.match(/#\w+/g);
   if (hashMatches) {
     hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
   }
 
-  // Dictionary keyword taxonomy scanners
   if (combinedText.includes("alex")) foundTags.add("alex");
   if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
   if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
@@ -1891,7 +1898,6 @@ function extractTopicsAndTags(html: string, title: string): string[] {
   return Array.from(foundTags);
 }
 
-// Client-side text sentiment categorization processor helper
 function detectSentimentLabel(html: string): string {
   const plainText = htmlToText(html).toLowerCase();
   if (!plainText || plainText.length < 5) return "Neutral Focus";
@@ -1918,6 +1924,7 @@ function formatDateLong(key: string) {
   return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(keyToDate(key));
 }
 
+// ... unchanged math matrices/string sanitizers ...
 function buildMonthCells(monthDate: Date) {
   const year = monthDate.getFullYear();
   const month = monthDate.getMonth();
@@ -2026,7 +2033,6 @@ function filesToAttachments(files: FileList) {
   );
 }
 
-// Custom error log mapping formatter
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Something went wrong.";

@@ -1,5 +1,4 @@
 // src/aiService.ts
-
 export interface DiaryEntry {
   id: string;
   date: string;

@@ -286,19 +286,6 @@ export default function App() {
   }
 
   async function saveEntry(entry: DiaryEntry) {
-    async function autoSaveEntry(entry: DiaryEntry) {
-  const entries = vault.entries.filter((item) => item.date !== entry.date);
-
-  const nextVault: VaultData = {
-    ...vault,
-    updatedAt: new Date().toISOString(),
-    entries: [...entries, entry].sort((a, b) =>
-      a.date.localeCompare(b.date)
-    ),
-  };
-
-  await persistVault(nextVault, `Auto-save ${entry.date}`);
-}
     const entries = vault.entries.filter((item) => item.date !== entry.date);
     const nextVault: VaultData = {
       ...vault,
@@ -390,16 +377,15 @@ export default function App() {
 
           {screen === "entry" ? (
             <EntryEditor
-  key={editingDate}
-  dateKey={editingDate}
-  entry={entryByDate.get(editingDate)}
-  entryByDate={entryByDate}
-  syncState={syncState}
-  onBack={() => setScreen("home")}
-  onSave={saveEntry}
-  onAutoSave={autoSaveEntry}
-  onDelete={deleteEntry}
-/>
+              key={editingDate}
+              dateKey={editingDate}
+              entry={entryByDate.get(editingDate)}
+              entryByDate={entryByDate}
+              syncState={syncState}
+              onBack={() => setScreen("home")}
+              onSave={saveEntry}
+              onDelete={deleteEntry}
+            />
           ) : null}
 
           {screen === "year" ? (
@@ -897,7 +883,6 @@ function EntryEditor({
   syncState,
   onBack,
   onSave,
-  onAutoSave,
   onDelete,
 }: {
   dateKey: string;
@@ -906,7 +891,6 @@ function EntryEditor({
   syncState: SyncState;
   onBack: () => void;
   onSave: (entry: DiaryEntry) => Promise<void>;
-  onAutoSave: (entry: DiaryEntry) => Promise<void>;
   onDelete: (dateKey: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState(entry?.title ?? "");
@@ -914,6 +898,40 @@ function EntryEditor({
   const [bodyHtml, setBodyHtml] = useState(entry?.bodyHtml ?? "");
   const [dailyWin, setDailyWin] = useState(entry?.dailyWin ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>(entry?.attachments ?? []);
+  const draftKey = `moonlit-draft-${dateKey}`;
+
+  useEffect(() => {
+    const savedDraft = localStorage.getItem(draftKey);
+    if (!savedDraft) return;
+
+    try {
+      const draft = JSON.parse(savedDraft);
+      setTitle(draft.title ?? "");
+      setMood(draft.mood ?? "happy");
+      setBodyHtml(draft.bodyHtml ?? "");
+      setDailyWin(draft.dailyWin ?? "");
+      setAttachments(draft.attachments ?? []);
+    } catch {}
+  }, [draftKey]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      localStorage.setItem(
+        draftKey,
+        JSON.stringify({
+          title,
+          mood,
+          bodyHtml,
+          dailyWin,
+          attachments,
+          updatedAt: Date.now(),
+        })
+      );
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [title, mood, bodyHtml, dailyWin, attachments, draftKey]);
+
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
@@ -921,62 +939,9 @@ function EntryEditor({
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
 
-  const lastAutoSaveRef = useRef("");
-
-useEffect(() => {
-  const interval = setInterval(async () => {
-    const contentExists =
-      title.trim() ||
-      bodyHtml.trim() ||
-      dailyWin.trim() ||
-      attachments.length > 0;
-
-    if (!contentExists) return;
-
-    const snapshot = JSON.stringify({
-      title,
-      mood,
-      bodyHtml,
-      dailyWin,
-      attachments,
-    });
-
-    if (snapshot === lastAutoSaveRef.current) return;
-
-    lastAutoSaveRef.current = snapshot;
-
-    try {
-      const now = new Date().toISOString();
-
-      const autoSavedEntry: DiaryEntry = {
-        id: entry?.id ?? createId(),
-        date: dateKey,
-        title: title.trim() || "Untitled entry",
-        mood,
-        bodyHtml: sanitizeHtml(bodyHtml).trim(),
-        dailyWin: dailyWin.trim(),
-        attachments,
-        createdAt: entry?.createdAt ?? now,
-        updatedAt: now,
-      };
-
-      await onAutoSave(autoSavedEntry);
-    } catch (err) {
-      console.error("Auto-save failed", err);
-    }
-  }, 1000);
-
-  return () => clearInterval(interval);
-}, [
-  title,
-  mood,
-  bodyHtml,
-  dailyWin,
-  attachments,
-  dateKey,
-  entry,
-  onSave,
-]);
+  const computedTags = useMemo(() => {
+    return extractTopicsAndTags(bodyHtml, title);
+  }, [bodyHtml, title]);
 
   // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
   async function triggerAIPrompt() {
@@ -1009,6 +974,7 @@ useEffect(() => {
       };
 
       await onSave(nextEntry);
+      localStorage.removeItem(draftKey);
     } catch (error) {
       setLocalError(getErrorMessage(error));
     } finally {
@@ -1583,13 +1549,13 @@ function AIIntelligenceView({
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
             <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-  <AIResponseRenderer
-    text={aiAnswer}
-    onDateClick={(dateKey) => {
-      onJumpToEntry(dateKey);
-    }}
-  />
-</div>
+              <AIResponseRenderer
+                text={aiAnswer}
+                onDateClick={(dateKey) => {
+                  onJumpToEntry(dateKey);
+                }}
+              />
+            </div>
           </div>
         )}
 

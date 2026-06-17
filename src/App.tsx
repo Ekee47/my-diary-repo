@@ -75,41 +75,11 @@ const DEFAULT_CONFIG: GitHubConfig = {
 };
 
 const MOODS: MoodOption[] = [
-  {
-    id: "happy",
-    label: "Happy",
-    color: "#f8c74a",
-    glow: "rgba(248, 199, 74, 0.42)",
-    description: "Bright, grateful, energized",
-  },
-  {
-    id: "depressed",
-    label: "Depressed",
-    color: "#5da8ff",
-    glow: "rgba(93, 168, 255, 0.36)",
-    description: "Heavy, quiet, low battery",
-  },
-  {
-    id: "sleepy",
-    label: "Sleepy",
-    color: "#a78bfa",
-    glow: "rgba(167, 139, 250, 0.4)",
-    description: "Slow, soft, tired mind",
-  },
-  {
-    id: "angry",
-    label: "Angry",
-    color: "#ff5b6c",
-    glow: "rgba(255, 91, 108, 0.38)",
-    description: "Hot, restless, intense",
-  },
-  {
-    id: "romantic",
-    label: "Romantic",
-    color: "#ff7ac8",
-    glow: "rgba(255, 122, 200, 0.42)",
-    description: "Tender, dreamy, connected",
-  },
+  { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
+  { id: "depressed", label: "Depressed", color: "#5da8ff", glow: "rgba(93, 168, 255, 0.36)", description: "Heavy, quiet, low battery" },
+  { id: "sleepy", label: "Sleepy", color: "#a78bfa", glow: "rgba(167, 139, 250, 0.4)", description: "Slow, soft, tired mind" },
+  { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
+  { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
 ];
 
 const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
@@ -119,7 +89,6 @@ const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// Predefined conceptual synonyms mapping for client-side semantic filters
 const SEMANTIC_DICTIONARY: Record<string, string[]> = {
   beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
   alex: ["friend", "buddy", "partner", "mate", "brother"],
@@ -135,72 +104,11 @@ interface AIResponseRendererProps {
 }
 
 /**
- * Converts "1st july 2026" or "22nd june 2026" into standard "2026-07-01" or "2026-06-22"
- */
-function parseReadableDateToISO(readableDate: string): string {
-  const clean = readableDate.toLowerCase().trim();
-  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
-  
-  if (!match) return readableDate; // Fallback to raw text if it doesn't match
-  
-  const day = match[1].padStart(2, '0');
-  const monthName = match[2];
-  const year = match[3];
-  
-  const months: Record<string, string> = {
-    january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
-    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
-  };
-  
-  const month = months[monthName] || '01';
-  return `${year}-${month}-${day}`;
-}
-
-export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
-  // Regex looks for patterns like [1st july 2026] or [22nd june 2026]
-  const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
-  const parts = text.split(dateRegex);
-
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (dateRegex.test(part)) {
-          // Strip out the brackets to isolate the words "1st july 2026"
-          const rawReadableDate = part.replace(/[\[\]]/g, "");
-          // Convert it into the machine format "2026-07-01"
-          const isoDate = parseReadableDateToISO(rawReadableDate);
-          
-          return (
-            <button
-              key={index}
-              onClick={() => onDateClick(isoDate)}
-              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline cursor-pointer transition-colors"
-              style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }}
-            >
-              {rawReadableDate}
-            </button>
-          );
-        }
-        return <span key={index}>{part}</span>;
-      })}
-    </>
-  );
-}
-
-import React from 'react';
-
-interface AIResponseRendererProps {
-  text: string;
-  onDateClick: (isoDateStr: string) => void;
-}
-
-/**
  * Converts text like "1st july 2026" into standard "2026-07-01"
  */
 function parseReadableDateToISO(readableDate: string): string {
   const clean = readableDate.toLowerCase().trim();
   const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
-  
   if (!match) return readableDate;
   
   const day = match[1].padStart(2, '0');
@@ -212,12 +120,13 @@ function parseReadableDateToISO(readableDate: string): string {
     july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
   };
   
-  const month = months[monthName] || '01';
-  return `${year}-${month}-${day}`;
+  return `${year}-${months[monthName] || '01'}-${day}`;
 }
 
+/**
+ * Renders AI response text, turning readable date strings into clickable system buttons
+ */
 export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
-  // Finds custom dates formatted like [1st july 2026]
   const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
   const parts = text.split(dateRegex);
 
@@ -238,7 +147,7 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
                 border: 'none',
                 padding: 0,
                 font: 'inherit',
-                color: '#22d3ee', // Bright clickable cyan color
+                color: '#22d3ee',
                 fontWeight: 'bold',
                 cursor: 'pointer',
                 textDecoration: 'underline'
@@ -253,6 +162,7 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
     </>
   );
 }
+
 
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);

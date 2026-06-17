@@ -1513,7 +1513,14 @@ function AIIntelligenceView({
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
-            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
+            <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+  <AIResponseRenderer
+    text={aiAnswer}
+    onDateClick={(dateKey) => {
+      onJumpToEntry(dateKey);
+    }}
+  />
+</div>
           </div>
         )}
 

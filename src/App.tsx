@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
 import { smartAISearch, generateAICustomQuestion } from "./aiService";

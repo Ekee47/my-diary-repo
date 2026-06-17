@@ -32,6 +32,7 @@ jobs:
 
       - name: Build site
         run: npm run build
+        env: VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

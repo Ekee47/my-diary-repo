@@ -898,40 +898,6 @@ function EntryEditor({
   const [bodyHtml, setBodyHtml] = useState(entry?.bodyHtml ?? "");
   const [dailyWin, setDailyWin] = useState(entry?.dailyWin ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>(entry?.attachments ?? []);
-  const draftKey = `moonlit-draft-${dateKey}`;
-
-  useEffect(() => {
-    const savedDraft = localStorage.getItem(draftKey);
-    if (!savedDraft) return;
-
-    try {
-      const draft = JSON.parse(savedDraft);
-      setTitle(draft.title ?? "");
-      setMood(draft.mood ?? "happy");
-      setBodyHtml(draft.bodyHtml ?? "");
-      setDailyWin(draft.dailyWin ?? "");
-      setAttachments(draft.attachments ?? []);
-    } catch {}
-  }, [draftKey]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      localStorage.setItem(
-        draftKey,
-        JSON.stringify({
-          title,
-          mood,
-          bodyHtml,
-          dailyWin,
-          attachments,
-          updatedAt: Date.now(),
-        })
-      );
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [title, mood, bodyHtml, dailyWin, attachments, draftKey]);
-
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
@@ -974,7 +940,6 @@ function EntryEditor({
       };
 
       await onSave(nextEntry);
-      localStorage.removeItem(draftKey);
     } catch (error) {
       setLocalError(getErrorMessage(error));
     } finally {
@@ -1548,14 +1513,7 @@ function AIIntelligenceView({
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
-            <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-              <AIResponseRenderer
-                text={aiAnswer}
-                onDateClick={(dateKey) => {
-                  onJumpToEntry(dateKey);
-                }}
-              />
-            </div>
+            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
           </div>
         )}
 

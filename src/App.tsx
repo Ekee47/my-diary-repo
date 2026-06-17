@@ -187,6 +187,73 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
   );
 }
 
+import React from 'react';
+
+interface AIResponseRendererProps {
+  text: string;
+  onDateClick: (isoDateStr: string) => void;
+}
+
+/**
+ * Converts text like "1st july 2026" into standard "2026-07-01"
+ */
+function parseReadableDateToISO(readableDate: string): string {
+  const clean = readableDate.toLowerCase().trim();
+  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
+  
+  if (!match) return readableDate;
+  
+  const day = match[1].padStart(2, '0');
+  const monthName = match[2];
+  const year = match[3];
+  
+  const months: Record<string, string> = {
+    january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
+    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+  };
+  
+  const month = months[monthName] || '01';
+  return `${year}-${month}-${day}`;
+}
+
+export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
+  // Finds custom dates formatted like [1st july 2026]
+  const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
+  const parts = text.split(dateRegex);
+
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (dateRegex.test(part)) {
+          const rawReadableDate = part.replace(/[\[\]]/g, "");
+          const isoDate = parseReadableDateToISO(rawReadableDate);
+          
+          return (
+            <button
+              key={index}
+              onClick={() => onDateClick(isoDate)}
+              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors"
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                font: 'inherit',
+                color: '#22d3ee', // Bright clickable cyan color
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                textDecoration: 'underline'
+              }}
+            >
+              {rawReadableDate}
+            </button>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </>
+  );
+}
+
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);

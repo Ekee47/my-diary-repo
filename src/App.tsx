@@ -1513,7 +1513,7 @@ function AIIntelligenceView({
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
-            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans"><AIResponseRenderer text={aiAnswer} onDateClick={(isoDate) => openEntry(isoDate)} /></p>
+            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
           </div>
         )}
 
@@ -1975,38 +1975,6 @@ function buildMonthCells(monthDate: Date) {
       inCurrentMonth: date.getMonth() === month,
     };
   });
-}
-
-function parseReadableDateToISO(readableDate: string): string {
-  const clean = readableDate.toLowerCase().replace(/[\[\]]/g, "").trim();
-  const months: Record<string, string> = {
-    january: "01", february: "02", march: "03", april: "04", may: "05", june: "06",
-    july: "07", august: "08", september: "09", october: "10", november: "11", december: "12",
-    jan: "01", feb: "02", mar: "03", apr: "04", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
-  };
-  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
-  if (!match) return readableDate;
-  return `${match[3]}-${months[match[2]] || "01"}-${match[1].padStart(2, "0")}`;
-}
-
-function AIResponseRenderer({ text, onDateClick }: { text: string, onDateClick: (date: string) => void }) {
-  const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+\s+\d{4}\])/gi;
-  const parts = text.split(dateRegex);
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (dateRegex.test(part)) {
-          const isoDate = parseReadableDateToISO(part);
-          return (
-            <button key={index} onClick={() => onDateClick(isoDate)} className="text-cyan-400 underline font-bold px-1">
-              {part.replace(/[\[\]]/g, "")}
-            </button>
-          );
-        }
-        return <span key={index}>{part}</span>;
-      })}
-    </>
-  );
 }
 
 function createId() {

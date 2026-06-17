@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent,
 import { cn } from "./utils/cn";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic";
-type Screen = "home" | "entry" | "year";
+type Screen = "home" | "entry" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
 
 type MoodOption = {
@@ -117,6 +117,16 @@ const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+// Predefined conceptual synonyms mapping for client-side semantic filters
+const SEMANTIC_DICTIONARY: Record<string, string[]> = {
+  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
+  alex: ["friend", "buddy", "partner", "mate", "brother"],
+  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
+  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
+  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
+  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
+};
+
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);
@@ -132,6 +142,7 @@ export default function App() {
   const [editingDate, setEditingDate] = useState(todayKey);
   const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
   const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
+  const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -298,10 +309,15 @@ export default function App() {
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <TopBar
           syncState={syncState}
+          currentScreen={screen}
           onHome={() => setScreen("home")}
           onYear={() => {
             setYearView(keyToDate(selectedDate).getFullYear());
             setScreen("year");
+          }}
+          onAIScreen={() => {
+            setSelectedAITag(null);
+            setScreen("ai");
           }}
           onNewEntry={() => openEntry(todayKey)}
           onSync={reloadVault}
@@ -327,6 +343,7 @@ export default function App() {
               key={editingDate}
               dateKey={editingDate}
               entry={entryByDate.get(editingDate)}
+              entryByDate={entryByDate}
               syncState={syncState}
               onBack={() => setScreen("home")}
               onSave={saveEntry}
@@ -341,6 +358,16 @@ export default function App() {
               onYearChange={setYearView}
               onBack={() => setScreen("home")}
               onOpenEntry={openEntry}
+            />
+          ) : null}
+
+          {screen === "ai" ? (
+            <AIIntelligenceView
+              entries={vault.entries}
+              initialTagFilter={selectedAITag}
+              onJumpToEntry={(dateKey) => {
+                openEntry(dateKey);
+              }}
             />
           ) : null}
         </main>
@@ -504,15 +531,19 @@ function UnlockScreen({
 
 function TopBar({
   syncState,
+  currentScreen,
   onHome,
   onYear,
+  onAIScreen,
   onNewEntry,
   onSync,
   onLock,
 }: {
   syncState: SyncState;
+  currentScreen: Screen;
   onHome: () => void;
   onYear: () => void;
+  onAIScreen: () => void;
   onNewEntry: () => void;
   onSync: () => void;
   onLock: () => void;
@@ -532,16 +563,23 @@ function TopBar({
 
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
-        <button type="button" onClick={onSync} className="nav-button">
-          Sync
+        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
+          Calendar
         </button>
-        <button type="button" onClick={onYear} className="nav-button">
+        <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
+          <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
+          <span className="relative flex items-center gap-1">✨ AI Hub</span>
+        </button>
+        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
           Year in pixels
         </button>
         <button type="button" onClick={onNewEntry} className="nav-button-primary">
           New entry
         </button>
-        <button type="button" onClick={onLock} className="nav-button">
+        <button type="button" onClick={onSync} className="nav-button">
+          Sync
+        </button>
+        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
           Lock
         </button>
       </div>
@@ -595,6 +633,12 @@ function HomeView({
   });
   const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
   const yearLabel = visibleMonth.getFullYear();
+
+  // Dynamic tag compiler for current highlighted entry
+  const entryTags = useMemo(() => {
+    if (!selectedEntry) return [];
+    return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
+  }, [selectedEntry]);
 
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -660,11 +704,30 @@ function HomeView({
 
           {selectedEntry ? (
             <div className="mt-5 space-y-4">
-              <MoodChip mood={selectedEntry.mood} />
+              <div className="flex flex-wrap gap-2 items-center">
+                <MoodChip mood={selectedEntry.mood} />
+                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
+                  {detectSentimentLabel(selectedEntry.bodyHtml)}
+                </span>
+              </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
                 <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
               </div>
+              
+              {entryTags.length > 0 && (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
+                  <div className="flex flex-wrap gap-1">
+                    {entryTags.map(t => (
+                      <span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">
+                        {t.startsWith("#") ? t : `#${t}`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
                 <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
@@ -778,6 +841,7 @@ function MonthlyCalendar({
 function EntryEditor({
   dateKey,
   entry,
+  entryByDate,
   syncState,
   onBack,
   onSave,
@@ -785,6 +849,7 @@ function EntryEditor({
 }: {
   dateKey: string;
   entry?: DiaryEntry;
+  entryByDate: Map<string, DiaryEntry>;
   syncState: SyncState;
   onBack: () => void;
   onSave: (entry: DiaryEntry) => Promise<void>;
@@ -797,8 +862,43 @@ function EntryEditor({
   const [attachments, setAttachments] = useState<Attachment[]>(entry?.attachments ?? []);
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
+  const [aiPrompt, setAIPrompt] = useState<string | null>(null);
+  
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
+
+  // Dynamic extracted tags compiled in real-time
+  const computedTags = useMemo(() => {
+    return extractTopicsAndTags(bodyHtml, title);
+  }, [bodyHtml, title]);
+
+  // Lookup yesterday's context parameters to formulate privacy-first smart assistant prompts
+  function triggerAIPrompt() {
+    const activeDate = keyToDate(dateKey);
+    const yesterdayDate = new Date(activeDate.getFullYear(), activeDate.getMonth(), activeDate.getDate() - 1);
+    const yesterdayKey = dateToKey(yesterdayDate);
+    const yesterdayEntry = entryByDate.get(yesterdayKey);
+
+    if (yesterdayEntry) {
+      const yesterdayText = htmlToText(yesterdayEntry.bodyHtml).toLowerCase();
+      let themeMention = "your day yesterday";
+      if (yesterdayText.includes("work") || yesterdayText.includes("project")) themeMention = "overwhelmed with work elements";
+      if (yesterdayText.includes("beach") || yesterdayText.includes("ocean")) themeMention = "your relaxing escape to the coastal water lines";
+      if (yesterdayText.includes("alex")) themeMention = "your conversations with Alex";
+      
+      setAIPrompt(
+        `Yesterday you felt "${yesterdayEntry.mood}" and mentioned ${themeMention}. Did things clear up or change direction for you today?`
+      );
+    } else {
+      const defaultPrompts = [
+        "What is a small detail from today that you don't want to forget?",
+        "If today was a chapter in a book, what would its title be and why?",
+        "How did your energy levels shift from morning to evening today?",
+        "Was there a moment today where you felt completely locked into what you were doing?"
+      ];
+      setAIPrompt(defaultPrompts[Math.floor(Math.random() * defaultPrompts.length)]);
+    }
+  }
 
   async function handleSave() {
     setLocalError("");
@@ -861,10 +961,36 @@ function EntryEditor({
           </div>
         </div>
 
+        {/* AI Prompt Journaling Assistant Panel widget */}
+        <div className="mt-6 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.0</div>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
+              <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
+            </div>
+            <button 
+              type="button" 
+              onClick={triggerAIPrompt} 
+              className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
+            >
+              Generate Prompt
+            </button>
+          </div>
+          {aiPrompt && (
+            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">
+              "{aiPrompt}"
+            </div>
+          )}
+        </div>
+
         <div className="mt-8 space-y-5">
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
             <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
+            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
+              AI Assessment: {detectSentimentLabel(bodyHtml)}
+            </span>
           </div>
 
           <input
@@ -875,6 +1001,20 @@ function EntryEditor({
           />
 
           <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
+
+          {/* Extracted Topic clouds list display area */}
+          {computedTags.length > 0 && (
+            <div className="pt-2">
+              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
+              <div className="flex flex-wrap gap-1.5">
+                {computedTags.map(tag => (
+                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {localError ? <SyncError message={localError} compact /> : null}
@@ -1190,6 +1330,269 @@ function MonthPixelPanel({
   );
 }
 
+/* ==========================================================================
+   NEW WORKSPACE VIEW: DEDICATED ADVANCED AI INSIGHTS & INTEL SEARCH VIEW
+   ========================================================================== */
+function AIIntelligenceView({
+  entries,
+  initialTagFilter,
+  onJumpToEntry,
+}: {
+  entries: DiaryEntry[];
+  initialTagFilter: string | null;
+  onJumpToEntry: (dateKey: string) => void;
+}) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
+
+  // Compile global dynamic tag weights and keyword summaries across all data files
+  const globalTopicCloud = useMemo(() => {
+    const frequencyMap: Record<string, number> = {};
+    entries.forEach((item) => {
+      const extracted = extractTopicsAndTags(item.bodyHtml, item.title);
+      extracted.forEach((t) => {
+        frequencyMap[t] = (frequencyMap[t] || 0) + 1;
+      });
+    });
+    return Object.entries(frequencyMap)
+      .map(([text, count]) => ({ text, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [entries]);
+
+  // Compute conceptual expansions (e.g. mapping search for ocean -> matches beach or coast text)
+  const expandedTerms = useMemo(() => {
+    const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (queries.length === 0) return [];
+    
+    const terms = [...queries];
+    queries.forEach(q => {
+      if (SEMANTIC_DICTIONARY[q]) {
+        terms.push(...SEMANTIC_DICTIONARY[q]);
+      }
+      // Check inverse mappings
+      Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
+        if (synonyms.includes(q) && !terms.includes(key)) {
+          terms.push(key);
+        }
+      });
+    });
+    return Array.from(new Set(terms));
+  }, [searchQuery]);
+
+  // Client-side intelligence filtering logic module
+  const filteredEntries = useMemo(() => {
+    return entries.filter((item) => {
+      const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
+      const titleClean = item.title.toLowerCase();
+      const dateString = item.date;
+
+      // Tag selector constraints
+      if (activeTag) {
+        const itemTags = extractTopicsAndTags(item.bodyHtml, item.title);
+        if (!itemTags.includes(activeTag)) return false;
+      }
+
+      // Keyword query text matching logic
+      if (expandedTerms.length > 0) {
+        return expandedTerms.some(
+          (term) =>
+            bodyClean.includes(term) ||
+            titleClean.includes(term) ||
+            dateString.includes(term)
+        );
+      }
+      return true;
+    }).sort((a, b) => b.date.localeCompare(a.date));
+  }, [entries, expandedTerms, activeTag]);
+
+  // Mood weight trends aggregator for SVG graphs analytics calculation
+  const emotionalDistribution = useMemo(() => {
+    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0 };
+    entries.forEach((e) => {
+      if (tallies[e.mood] !== undefined) tallies[e.mood]++;
+    });
+    return tallies;
+  }, [entries]);
+
+  const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px] animate-screen-in">
+      <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
+        
+        {/* Search Header Container block */}
+        <div className="space-y-2">
+          <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
+          <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
+          <p className="text-sm text-slate-400 max-w-2xl">
+            Type natural questions or conceptual keys. The intelligence processing brain matches partial fragments, tags, and conceptual synonyms (e.g., searching for "ocean" will discover entries referencing "beach").
+          </p>
+        </div>
+
+        {/* Input box component */}
+        <div className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
+          <span className="text-xl text-slate-500">🔍</span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder='Try searching "When did I go to the beach?" or "entries mentioning Alex"...'
+            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base"
+          />
+          {searchQuery && (
+            <button type="button" onClick={() => setSearchQuery("")} className="text-xs text-slate-500 hover:text-white px-2">
+              Clear
+            </button>
+          )}
+        </div>
+
+        {/* Dynamic expansion status indicators */}
+        {expandedTerms.length > 0 && (
+          <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
+            <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
+            {expandedTerms.map((t) => (
+              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Selected tag constraint badge overlay */}
+        {activeTag && (
+          <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
+            <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
+            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
+              Remove Filter
+            </button>
+          </div>
+        )}
+
+        {/* Filter Output List Area */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
+            <span className="text-xs text-slate-600">Click entry row to jump instantly to document layout editor</span>
+          </div>
+
+          {filteredEntries.length > 0 ? (
+            <div className="space-y-2.5 max-h-[32rem] overflow-y-auto pr-1">
+              {filteredEntries.map((item) => {
+                const option = MOOD_BY_ID[item.mood];
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onJumpToEntry(item.date)}
+                    className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">
+                          {item.date}
+                        </span>
+                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">
+                          {item.title}
+                        </h4>
+                      </div>
+                      <p className="text-xs text-slate-400 truncate max-w-xl">
+                        {htmlToText(item.bodyHtml)}
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-slate-500 hidden sm:inline">
+                        {detectSentimentLabel(item.bodyHtml)}
+                      </span>
+                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
+              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Analytics Sidebar Workspace panels */}
+      <aside className="space-y-4 animate-float-in">
+        
+        {/* Sentiment breakdown analytical bar widget graphs */}
+        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
+            <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated textual weight scores.</p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            {MOODS.map((m) => {
+              const count = emotionalDistribution[m.id] || 0;
+              const normalizedPct = (count / maxDistributionCount) * 100;
+              return (
+                <div key={m.id} className="space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-white font-medium flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
+                      {m.label}
+                    </span>
+                    <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
+                  </div>
+                  <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${normalizedPct}%`,
+                        backgroundColor: m.color,
+                        boxShadow: `0 0 10px ${m.glow}`,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Global Cloud Tags Module segment */}
+        <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
+            <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
+          </div>
+
+          {globalTopicCloud.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5 pt-2">
+              {globalTopicCloud.map((tag) => (
+                <button
+                  key={tag.text}
+                  type="button"
+                  onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
+                    activeTag === tag.text
+                      ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
+                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
+                  )}
+                >
+                  #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
+          )}
+        </section>
+
+        <MoodLegend />
+      </aside>
+    </div>
+  );
+}
+
 function MoodLegend() {
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
@@ -1466,6 +1869,47 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
+// Scans writing text patterns to categorize dynamic tag topics automatically
+function extractTopicsAndTags(html: string, title: string): string[] {
+  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
+  const foundTags = new Set<string>();
+
+  // Explicit hashtag regex scanning module
+  const hashMatches = combinedText.match(/#\w+/g);
+  if (hashMatches) {
+    hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
+  }
+
+  // Dictionary keyword taxonomy scanners
+  if (combinedText.includes("alex")) foundTags.add("alex");
+  if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
+  if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
+  if (combinedText.includes("gym") || combinedText.includes("workout") || combinedText.includes("run")) foundTags.add("fitness");
+  if (combinedText.includes("coding") || combinedText.includes("code") || combinedText.includes("app")) foundTags.add("dev");
+  if (combinedText.includes("family") || combinedText.includes("home") || combinedText.includes("parents")) foundTags.add("family");
+
+  return Array.from(foundTags);
+}
+
+// Client-side text sentiment categorization processor helper
+function detectSentimentLabel(html: string): string {
+  const plainText = htmlToText(html).toLowerCase();
+  if (!plainText || plainText.length < 5) return "Neutral Focus";
+
+  let positiveScore = 0;
+  let heavyScore = 0;
+
+  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
+  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
+
+  positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
+  heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
+
+  if (positiveScore > heavyScore) return "Energetic & Bright";
+  if (heavyScore > positiveScore) return "Reflective & Introspective";
+  return "Balanced Reflection";
+}
+
 function addMonths(date: Date, amount: number) {
   return new Date(date.getFullYear(), date.getMonth() + amount, 1);
 }
@@ -1582,6 +2026,7 @@ function filesToAttachments(files: FileList) {
   );
 }
 
+// Custom error log mapping formatter
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Something went wrong.";

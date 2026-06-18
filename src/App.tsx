@@ -239,6 +239,16 @@ export default function App() {
   // Cache for resolved media blob URLs
   const mediaCacheRef = useRef<Map<string, string>>(new Map());
   const [, setMediaCacheVersion] = useState(0);
+  // Refs to always read latest values inside async background tasks (avoid stale closures)
+  const vaultRef = useRef<VaultData>(vault);
+  const remoteShaRef = useRef<string | null>(remoteSha);
+  const configRef = useRef<GitHubConfig | null>(config);
+  const passphraseRef = useRef<string>(passphrase);
+
+  useEffect(() => { vaultRef.current = vault; }, [vault]);
+  useEffect(() => { remoteShaRef.current = remoteSha; }, [remoteSha]);
+  useEffect(() => { configRef.current = config; }, [config]);
+  useEffect(() => { passphraseRef.current = passphrase; }, [passphrase]);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -309,23 +319,6 @@ export default function App() {
     } catch (error) {
       setSyncState("error");
       setSyncError(getErrorMessage(error));
-    }
-  }
-
-  async function persistVault(nextVault: VaultData, commitMessage: string) {
-    if (!config || !passphrase) throw new Error("Unlock your GitHub vault before saving.");
-    setSyncError("");
-    setSyncState("saving");
-    try {
-      const encrypted = await encryptVault(nextVault, passphrase);
-      const saved = await putGitHubVaultFile(config, encrypted, remoteSha, commitMessage);
-      setVault(nextVault);
-      setRemoteSha(saved.sha);
-      setSyncState("saved");
-    } catch (error) {
-      setSyncState("error");
-      setSyncError(getErrorMessage(error));
-      throw error;
     }
   }
 
@@ -476,13 +469,13 @@ export default function App() {
   async function saveEntry(entry: DiaryEntry) {
     clearDraft(entry.date);
 
-    // Build optimistic entry with dataUrls available for immediate display
+    // Build optimistic entry — keeps local File/objectUrl so user sees previews instantly
     const optimisticEntry: DiaryEntry = { ...entry };
-    const entries = vault.entries.filter(i => i.date !== entry.date);
+    const optimisticEntries = vault.entries.filter(i => i.date !== entry.date);
     const optimisticVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
-      entries: [...entries, optimisticEntry].sort((a, b) => a.date.localeCompare(b.date)),
+      entries: [...optimisticEntries, optimisticEntry].sort((a, b) => a.date.localeCompare(b.date)),
     };
 
     setVault(optimisticVault);
@@ -490,27 +483,63 @@ export default function App() {
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
 
-    // Background save: upload media first, then save tiny vault
+    // Background save: upload media first, then save compact vault
     (async () => {
+      const cfg = configRef.current;
+      const pass = passphraseRef.current;
+      if (!cfg) {
+        console.error("[Moonlit] Cannot save — no GitHub config.");
+        setSyncState("error");
+        setSyncError("Vault not configured");
+        return;
+      }
+      if (!pass) {
+        console.error("[Moonlit] Cannot save — no passphrase available.");
+        setSyncState("error");
+        setSyncError("Vault locked — passphrase missing");
+        return;
+      }
+
       try {
         setSyncState("saving");
         setSyncError("");
-        if (!config) throw new Error("Vault not configured");
 
-        // Upload all new local attachments (File object preferred, dataUrl as fallback for old entries)
+        console.log(`[Moonlit] Saving entry for ${entry.date} with ${entry.attachments.length} attachment(s)`);
+
+        // Upload all new local attachments (File preferred, dataUrl fallback for legacy entries)
         const savedAttachments: Attachment[] = [];
         for (let i = 0; i < entry.attachments.length; i++) {
           const att = entry.attachments[i];
+
+          // Already uploaded? keep cloud reference
+          if (att.mediaPath && att.mediaUrl && !att.file && !att.dataUrl) {
+            console.log(`[Moonlit] Attachment ${att.name} already in cloud, keeping reference.`);
+            savedAttachments.push({
+              id: att.id,
+              name: att.name,
+              type: att.type,
+              size: att.size,
+              addedAt: att.addedAt,
+              mediaUrl: att.mediaUrl,
+              mediaPath: att.mediaPath,
+              mediaSha: att.mediaSha,
+            });
+            continue;
+          }
+
+          // New file: needs upload
           if (att.file || att.dataUrl) {
             const uploadSource = att.file ?? att.dataUrl!;
+            console.log(`[Moonlit] Uploading ${att.name} (${formatBytes(att.size)})...`);
             const uploaded = await uploadAttachmentToMediaRepo(
               uploadSource,
               entry.date,
               att.id,
               att.name,
               att.type,
-              config,
+              cfg,
             );
+            console.log(`[Moonlit] Uploaded ${att.name} → ${uploaded.mediaPath}`);
             savedAttachments.push({
               id: att.id,
               name: att.name,
@@ -522,25 +551,53 @@ export default function App() {
               mediaSha: uploaded.mediaSha ?? undefined,
             });
           } else {
-            savedAttachments.push(att);
+            console.warn(`[Moonlit] Attachment ${att.name} has no source (no file/dataUrl/mediaPath) — dropping.`);
           }
         }
 
-        const compactEntry: DiaryEntry = { ...entry, attachments: savedAttachments };
-        const allEntries = vault.entries.filter(i => i.date !== entry.date);
-        const nextVault: VaultData = {
-          ...vault,
-          updatedAt: new Date().toISOString(),
-          entries: [...allEntries, compactEntry].sort((a, b) => a.date.localeCompare(b.date)),
+        // Build compact entry — strip File/objectUrl, keep only persistable fields
+        const compactEntry: DiaryEntry = {
+          id: entry.id,
+          date: entry.date,
+          title: entry.title,
+          mood: entry.mood,
+          bodyHtml: entry.bodyHtml,
+          dailyWin: entry.dailyWin,
+          attachments: savedAttachments,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
         };
 
-        const encrypted = await encryptVault(nextVault, passphrase);
-        const saved = await putGitHubVaultFile(config, encrypted, remoteSha, `Save diary entry for ${entry.date}`);
+        // Use the LATEST vault state (in case other saves happened)
+        const currentVault = vaultRef.current;
+        const otherEntries = currentVault.entries.filter(i => i.date !== entry.date);
+        const nextVault: VaultData = {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          entries: [...otherEntries, compactEntry].sort((a, b) => a.date.localeCompare(b.date)),
+        };
+
+        console.log(`[Moonlit] Encrypting and pushing vault with ${nextVault.entries.length} entry(ies) — compact entry has ${savedAttachments.length} attachment(s).`);
+
+        // Re-fetch latest remoteSha right before save to avoid stale-SHA conflicts
+        let shaToUse = remoteShaRef.current;
+        try {
+          const latest = await fetchGitHubVaultFile(cfg);
+          if (latest.exists) shaToUse = latest.sha;
+        } catch (e) {
+          console.warn("[Moonlit] Could not fetch latest vault sha, using cached:", e);
+        }
+
+        const encrypted = await encryptVault(nextVault, pass);
+        const saved = await putGitHubVaultFile(cfg, encrypted, shaToUse, `Save diary entry for ${entry.date}`);
+
+        console.log(`[Moonlit] Vault saved successfully. New sha: ${saved.sha}`);
+
         setVault(nextVault);
         setRemoteSha(saved.sha);
         setSyncState("saved");
       } catch (error) {
-        console.error("Background save failed:", error);
+        console.error("[Moonlit] Background save failed:", error);
         setSyncState("error");
         setSyncError(getErrorMessage(error));
       }
@@ -558,12 +615,26 @@ export default function App() {
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
+
     (async () => {
+      const cfg = configRef.current;
+      const pass = passphraseRef.current;
+      if (!cfg || !pass) return;
       try {
         setSyncState("saving");
-        await persistVault(nextVault, `Delete diary entry for ${dateKey}`);
+        let shaToUse = remoteShaRef.current;
+        try {
+          const latest = await fetchGitHubVaultFile(cfg);
+          if (latest.exists) shaToUse = latest.sha;
+        } catch { /* ignore */ }
+        const encrypted = await encryptVault(nextVault, pass);
+        const saved = await putGitHubVaultFile(cfg, encrypted, shaToUse, `Delete diary entry for ${dateKey}`);
+        setRemoteSha(saved.sha);
+        setSyncState("saved");
       } catch (error) {
-        console.error("Delete failed:", error);
+        console.error("[Moonlit] Delete failed:", error);
+        setSyncState("error");
+        setSyncError(getErrorMessage(error));
       }
     })();
   }

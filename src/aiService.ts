@@ -116,9 +116,10 @@ Read the journal excerpts (old + recent). Think privately about:
 
 Hard output rules (follow exactly):
 - Output EXACTLY ONE line.
-- Start with either "QUESTION:" or "ASSERT:".
-- Total length: 30-50 words.
-- The text must be ONLY the question OR the assertion (no extra labels beyond the prefix).
+- Start with "QUESTION:" and maybe "ASSERTION:".
+- Question length: 5-20 words.
+- Assertion length: 30-50 words.
+- The text must be ONLY the question and maybe the assertion (no extra labels beyond the prefix).
 - It must be answerable from the excerpts (no random topics).
 - Use Hinglish only if the excerpts use Hinglish vibe; otherwise use English.
 - Do NOT mention you are an AI.

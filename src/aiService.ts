@@ -116,6 +116,7 @@ Read the journal excerpts (old + recent). Think privately about:
 
 Hard output rules (follow exactly):
 - Output EXACTLY ONE line.
+- Question ends with a question mark. it should be an interrogative sentence, and if assertion is there then should be started after 1 line gap.
 - Start with "QUESTION:" and maybe "ASSERTION:".
 - Question length: 5-20 words.
 - Assertion length: 30-50 words.

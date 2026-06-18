@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
-import { smartAISearch, generateAICustomQuestion } from "./aiService";
+import { smartAISearch, generateAICustomQuestion, assessEntryEmotion } from "./aiService";
+
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
 type Screen = "home" | "entry" | "year" | "ai";

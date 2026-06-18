@@ -107,26 +107,21 @@ export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<s
     .join("\n\n---\n\n");
 
   const prompt = `
-You must do real synthesis.
+You are an emotionally intelligent journaling companion with your own mind.
+Read the user's recent entries and THINK before you respond:
+${formattedContext}
 
-Given the following journal excerpts (old + recent), do this in order:
-1) Extract 3–6 concrete “threads” (recurring people/places/issues/values) and 1–2 “emotional shifts”.
-2) Choose the strongest thread that is most relevant right now.
-3) Predict what the user is likely avoiding or not fully naming.
-4) Produce:
-   - A short “assistant insight” (1–2 sentences) that connects today’s strongest thread to older entries.
-   - ONE single “main question” that is specific, non-generic, and answerable from your journal memory.
-   - TWO gentle assertions the user can confirm/deny (not interrogations).
+Internal reasoning (DO NOT output): Identify their current emotional state, recurring themes,
+unresolved tensions, important people, goals, or decisions they seem to be wrestling with.
+
+Then craft EXACTLY ONE output: either a thoughtful probing question OR a gentle, insightful
+assertion that helps them reflect far deeper than surface level.
 
 Hard rules:
-- Do NOT write generic questions like “How was your day?”
-- Do NOT repeat the user’s text verbatim.
-- Do NOT mention that you are an AI.
-- Output ONLY in this exact format:
-INSIGHT: <text>
-QUESTION: <question>
-ASSERT1: <assertion>
-ASSERT2: <assertion>
+- NEVER ask shallow filler like "Are you still thinking about it?", "How was your day?", or "What's on your mind?".
+- Anchor it in concrete details, people, or feelings they actually wrote about.
+- Sound like a wise friend who remembers everything — warm, curious, specific.
+- Output ONLY the single question/assertion. No preamble, no quotes.
 
 JOURNAL EXCERPTS:
 ${formattedContext}
@@ -148,7 +143,7 @@ ${formattedContext}
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt }
         ],
-        temperature: 0.7,
+        temperature: 0.85,
       }),
     });
 
@@ -158,5 +153,34 @@ ${formattedContext}
     return data.choices[0].message.content;
   } catch (error) {
     return "How was your day today? Feel free to write about what's going on.";
+  }
+}
+
+export async function generateAITags(title: string, bodyHtml: string): Promise<string[]> {
+  if (!API_KEY) return [];
+  const clean = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
+  const prompt = `
+Read this journal entry and extract 3-7 short, meaningful topic tags (people, places, themes, emotions, activities).
+Title: ${title}
+Body: ${clean(bodyHtml)}
+
+Rules: lowercase, single words or short phrases, no #, no generic words like "day" or "thing".
+Output ONLY a comma-separated list.`;
+  try {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({
+        model: MODEL_NAME,
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: prompt }],
+        temperature: 0.3,
+      }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.choices[0].message.content as string)
+      .split(",").map((t) => t.trim().toLowerCase().replace(/^#/, "")).filter(Boolean).slice(0, 7);
+  } catch {
+    return [];
   }
 }

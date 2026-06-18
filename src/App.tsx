@@ -3,7 +3,7 @@ import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
 import { smartAISearch, generateAICustomQuestion } from "./aiService";
 
-type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazyy";
+type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
 type Screen = "home" | "entry" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
 
@@ -93,7 +93,7 @@ const MOODS: MoodOption[] = [
   { id: "sleepy", label: "Sleepy", color: "#a78bfa", glow: "rgba(167, 139, 250, 0.4)", description: "Slow, soft, tired mind" },
   { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
   { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
-  { id: "crazyy", label: "Crazyy", color: "#22c55e", glow: "rgba(34, 197, 94, 0.35)", description: "Chaotic energy, fast thoughts, unstoppable" },
+  { id: "crazy", label: "Crazyy", color: "#33e0a1", glow: "rgba(51, 224, 161, 0.45)", description: "Wild, hyper, unpredictable" },
 ];
 
 const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
@@ -1734,7 +1734,7 @@ function AIIntelligenceView({
   }, [entries, expandedTerms, activeTag]);
 
   const emotionalDistribution = useMemo(() => {
-    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazyy: 0 };
+    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazy: 0 };
     entries.forEach((e) => {
       if (tallies[e.mood] !== undefined) tallies[e.mood]++;
     });

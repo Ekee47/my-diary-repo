@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
 import { smartAISearch, generateAICustomQuestion } from "./aiService";
@@ -238,6 +238,8 @@ export default function App() {
   const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
   const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
   const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
+  const [lightboxAttachments, setLightboxAttachments] = useState<Attachment[] | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -343,6 +345,26 @@ export default function App() {
     }
   }
 
+  function openLightbox(attachments: Attachment[], startIndex: number) {
+    setLightboxAttachments(attachments);
+    setLightboxIndex(startIndex);
+  }
+
+  function closeLightbox() {
+    setLightboxAttachments(null);
+    setLightboxIndex(0);
+  }
+
+  function goToPrevLightboxItem() {
+    if (!lightboxAttachments) return;
+    setLightboxIndex((prev) => (prev > 0 ? prev - 1 : lightboxAttachments.length - 1));
+  }
+
+  function goToNextLightboxItem() {
+    if (!lightboxAttachments) return;
+    setLightboxIndex((prev) => (prev < lightboxAttachments.length - 1 ? prev + 1 : 0));
+  }
+
   async function saveEntry(entry: DiaryEntry) {
     // Clear draft when entry is explicitly saved
     clearDraft(entry.date);
@@ -354,10 +376,18 @@ export default function App() {
       entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
     };
 
-    await persistVault(nextVault, `Save diary entry for ${entry.date}`);
+    // Optimistically update the local vault state immediately so UI reflects the save
+    setVault(nextVault);
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
+
+    // Perform the actual GitHub save in the background
+    // Don't await here - let it complete in background while user can navigate
+    persistVault(nextVault, `Save diary entry for ${entry.date}`).catch((error) => {
+      console.error("Background save failed:", error);
+      // Error is already displayed via syncError/syncState
+    });
   }
 
   async function deleteEntry(dateKey: string) {
@@ -370,10 +400,16 @@ export default function App() {
       entries: vault.entries.filter((entry) => entry.date !== dateKey),
     };
 
-    await persistVault(nextVault, `Delete diary entry for ${dateKey}`);
+    // Optimistically update and navigate
+    setVault(nextVault);
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
+
+    // Delete in background
+    persistVault(nextVault, `Delete diary entry for ${dateKey}`).catch((error) => {
+      console.error("Background delete failed:", error);
+    });
   }
 
   function openEntry(dateKey: string) {
@@ -449,6 +485,7 @@ export default function App() {
               onBack={() => setScreen("home")}
               onSave={saveEntry}
               onDelete={deleteEntry}
+              onOpenLightbox={openLightbox}
             />
           ) : null}
 
@@ -473,6 +510,17 @@ export default function App() {
           ) : null}
         </main>
       </div>
+
+      {/* Lightbox Viewer */}
+      {lightboxAttachments && (
+        <LightboxViewer
+          attachments={lightboxAttachments}
+          currentIndex={lightboxIndex}
+          onClose={closeLightbox}
+          onPrev={goToPrevLightboxItem}
+          onNext={goToNextLightboxItem}
+        />
+      )}
     </div>
   );
 }
@@ -1011,6 +1059,7 @@ function EntryEditor({
   onBack,
   onSave,
   onDelete,
+  onOpenLightbox,
 }: {
   dateKey: string;
   entry?: DiaryEntry;
@@ -1019,6 +1068,7 @@ function EntryEditor({
   onBack: () => void;
   onSave: (entry: DiaryEntry) => Promise<void>;
   onDelete: (dateKey: string) => Promise<void>;
+  onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
 }) {
   // Load existing draft or use entry data
   const existingDraft = useMemo(() => loadDraft(dateKey), [dateKey]);
@@ -1282,7 +1332,7 @@ function EntryEditor({
           />
         </section>
 
-        <AttachmentPanel attachments={attachments} onChange={setAttachments} />
+        <AttachmentPanel attachments={attachments} onChange={setAttachments} onOpenLightbox={onOpenLightbox} />
       </aside>
     </section>
   );
@@ -1376,7 +1426,7 @@ function ToolbarButton({
   );
 }
 
-function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void }) {
+function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void; onOpenLightbox: (attachments: Attachment[], startIndex: number) => void }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -1425,7 +1475,7 @@ function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[];
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos up to 500MB each. They are encrypted inside the GitHub vault file.</p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB (base64 adds overhead).</p>
         </div>
         <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
           {isLoading ? "Loading..." : "Add"}
@@ -1444,34 +1494,58 @@ function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[];
 
       {totalBytes > 50 * 1024 * 1024 ? (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          ⚠️ Large media files may cause slow GitHub saves or hit API limits. Consider compressing videos to under 100MB for reliable commits.
+          ⚠️ GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail to save.
+          {totalBytes > 75 * 1024 * 1024 ? (
+            <strong className="block mt-1 text-rose-300">
+              ⚠️ Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500). Consider removing larger videos.
+            </strong>
+          ) : null}
         </p>
       ) : null}
 
       {error ? <SyncError message={error} compact /> : null}
 
       <div className="mt-4 grid gap-3">
-        {attachments.map((attachment) => (
+        {attachments.map((attachment, idx) => (
           <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
-            <div className="aspect-video bg-slate-900">
+            <button
+              type="button"
+              onClick={() => onOpenLightbox(attachments, idx)}
+              className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
+            >
               {attachment.type.startsWith("image/") ? (
-                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover" />
+                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
               ) : (
-                <video src={attachment.dataUrl} className="h-full w-full object-cover" controls />
+                <video src={attachment.dataUrl} className="h-full w-full object-cover" />
               )}
-            </div>
+              <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
+                <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
+                  Click to view fullscreen
+                </span>
+              </span>
+            </button>
             <div className="flex items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
                 <p className="text-xs text-slate-500">{formatBytes(attachment.size)}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))}
-                className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
-              >
-                Remove
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={attachment.dataUrl}
+                  download={attachment.name}
+                  className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  Download
+                </a>
+                <button
+                  type="button"
+                  onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))}
+                  className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
+                >
+                  Remove
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -2321,6 +2395,187 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
           reader.readAsDataURL(file);
         }),
     ),
+  );
+}
+
+function LightboxViewer({
+  attachments,
+  currentIndex,
+  onClose,
+  onPrev,
+  onNext,
+}: {
+  attachments: Attachment[];
+  currentIndex: number;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const currentAttachment = attachments[currentIndex];
+  const touchStartX = useRef<number | null>(null);
+  const touchEndX = useRef<number | null>(null);
+
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft") onPrev();
+      if (e.key === "ArrowRight") onNext();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, onPrev, onNext]);
+
+  // Cleanup body scroll lock when unmounting
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, []);
+
+  function handleTouchStart(e: ReactTouchEvent) {
+    touchStartX.current = e.changedTouches[0].screenX;
+    touchEndX.current = null;
+  }
+
+  function handleTouchMove(e: ReactTouchEvent) {
+    touchEndX.current = e.changedTouches[0].screenX;
+  }
+
+  function handleTouchEnd() {
+    if (!touchStartX.current || !touchEndX.current) return;
+    const diff = touchStartX.current - touchEndX.current;
+    const minSwipeDistance = 50;
+
+    if (Math.abs(diff) > minSwipeDistance) {
+      if (diff > 0) {
+        // Swiped left -> next
+        onNext();
+      } else {
+        // Swiped right -> prev
+        onPrev();
+      }
+    }
+    touchStartX.current = null;
+    touchEndX.current = null;
+  }
+
+  function downloadCurrent() {
+    const link = document.createElement("a");
+    link.href = currentAttachment.dataUrl;
+    link.download = currentAttachment.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  if (!currentAttachment) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Top bar */}
+      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          className="flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-2 text-white transition backdrop-blur-md"
+        >
+          <span className="text-lg leading-none">←</span>
+          <span className="text-sm font-medium">Back</span>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <span className="text-white/70 text-sm font-mono bg-black/40 px-3 py-1.5 rounded-full backdrop-blur-md">
+            {currentIndex + 1} / {attachments.length}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              downloadCurrent();
+            }}
+            className="flex items-center gap-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 px-4 py-2 text-cyan-100 transition backdrop-blur-md"
+          >
+            <span className="text-sm">⬇</span>
+            <span className="text-sm font-medium">Download</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Navigation arrows */}
+      {attachments.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrev();
+            }}
+            className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
+            aria-label="Previous"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNext();
+            }}
+            className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
+            aria-label="Next"
+          >
+            ›
+          </button>
+        </>
+      )}
+
+      {/* Filename at bottom */}
+      <div className="absolute bottom-4 left-0 right-0 z-10 text-center px-4">
+        <p className="text-white/80 text-sm truncate max-w-2xl mx-auto bg-black/50 inline-block px-4 py-2 rounded-full backdrop-blur-md">
+          {currentAttachment.name} <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
+        </p>
+      </div>
+
+      {/* Media content */}
+      <div
+        className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {currentAttachment.type.startsWith("image/") ? (
+          <img
+            src={currentAttachment.dataUrl}
+            alt={currentAttachment.name}
+            className="max-w-full max-h-[80vh] object-contain select-none"
+            draggable={false}
+          />
+        ) : currentAttachment.type.startsWith("video/") ? (
+          <video
+            src={currentAttachment.dataUrl}
+            controls
+            autoPlay
+            className="max-w-full max-h-[80vh] object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <div className="p-8 text-white/80 bg-white/10 rounded-2xl">
+            <p className="text-center">Preview not available for this file type.</p>
+            <p className="text-center text-sm mt-2 text-white/50">Use download button to save.</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

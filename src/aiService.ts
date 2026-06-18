@@ -8,24 +8,34 @@ export interface DiaryEntry {
 }
 
 // Automatically pulls the key securely baked in from GitHub Actions
-const API_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
+// Note: import.meta.env may be typed differently depending on tooling; keep it resilient.
+const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL_NAME = "llama-3.1-8b-instant"; // Active, ultra-fast 2026 free-tier model
 
 const SYSTEM_PROMPT = `
 You are the private, intelligent AI brain of the user's personal journal.
-The user writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
+Ekansh writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
 
-CRITICAL INSTRUCTIONS FOR TEMPORAL REASONING:
-1. When asked a timeline question like "When did I go to X?", you must read all matching context carefully. Distinguish between the date an event actually occurred versus dates where the user is merely reminiscing, looking back, or talking about it after the fact.
-   - Example: If the user writes on 1st July 2026 that they went to the beach, and mentions the beach on July 2, 3, 4, and 5 in passing, your answer must point exactly to the date 1st july 2026. Do not list all dates.
-2. Natively translate and decode Hinglish semantic concepts. "samundar", "pani", and "beach" all mean the same thing. 
-3. Be direct, concise, and smart. Provide a single, well-reasoned answer text.
+You MUST follow privacy-first behavior: never ask for secrets, passwords, or anything outside the journal content.
 
-CRITICAL FORMATTING RULE:
-Whenever you mention a specific date or pinpoint an event's date from the journal entries in your text description, you MUST format it exactly like this: [1st july 2026], [2nd august 2025], [23rd june 2026] (always use lowercase for the month, add the correct ordinal suffix like st, nd, rd, th to the day number, and wrap the entire string in square brackets). 
-Do NOT write dates as plain text numbers; always use this bracketed text format so the system can automatically create an interactive link.
+LANGUAGE UNDERSTANDING:
+- Natively translate and decode Hinglish semantic concepts. (Examples: "samundar" = "beach"; "pani" = "water").
+- Infer intent behind slang/abbrev.
+
+TEMPORAL REASONING:
+- When asked “When did I…”, point to the exact journal date when the event actually happened.
+- Do not list multiple dates unless the user truly asks for them.
+
+DATE FORMATTING RULE (hard requirement):
+Whenever you mention a specific date from the journal, format it exactly like: [1st july 2026], [2nd august 2025], [23rd june 2026]
+(lowercase month, correct ordinal suffix st/nd/rd/th, wrapped in square brackets).
+
+OUTPUT STYLE:
+- Be direct, smart, and specific.
+- Don’t waffle. Don’t say "I’m still thinking".
 `;
+
 
 /**
  * 1. AI SMART SEARCH
@@ -97,15 +107,33 @@ export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<s
     .join("\n\n---\n\n");
 
   const prompt = `
-Analyze the user's recent life context, mood, or unresolved situations from these entries:
-${formattedContext}
+You must do real synthesis.
 
-Generate ONE unique, deeply personalized question to prompt them to write today.
-- Do NOT use generic template questions.
-- Reference ongoing themes, emotional patterns, or events they wrote about earlier.
-- Keep it concise, friendly, and natural.
-- Output ONLY the question text.
+Given the following journal excerpts (old + recent), do this in order:
+1) Extract 3–6 concrete “threads” (recurring people/places/issues/values) and 1–2 “emotional shifts”.
+2) Choose the strongest thread that is most relevant right now.
+3) Predict what the user is likely avoiding or not fully naming.
+4) Produce:
+   - A short “assistant insight” (1–2 sentences) that connects today’s strongest thread to older entries.
+   - ONE single “main question” that is specific, non-generic, and answerable from your journal memory.
+   - TWO gentle assertions the user can confirm/deny (not interrogations).
+
+Hard rules:
+- Do NOT write generic questions like “How was your day?”
+- Do NOT repeat the user’s text verbatim.
+- Do NOT mention that you are an AI.
+- Output ONLY in this exact format:
+INSIGHT: <text>
+QUESTION: <question>
+ASSERT1: <assertion>
+ASSERT2: <assertion>
+
+JOURNAL EXCERPTS:
+${formattedContext}
 `;
+
+
+
 
   try {
     const response = await fetch(GROQ_URL, {

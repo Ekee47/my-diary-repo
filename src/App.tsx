@@ -1883,10 +1883,10 @@ function AIIntelligenceView({
 
       <aside className="space-y-4 animate-float-in">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
-            <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated textual weight scores.</p>
-          </div>
+          <div className="flex items-center justify-between">
+  <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood Graph</p>
+  <span className="text-[10px] text-slate-500">{entries.length} entries</span>
+</div>
 
           <div className="space-y-3 pt-2">
             {MOODS.map((m) => {

@@ -22,6 +22,13 @@ type AttachmentChunk = {
   sha?: string;
 };
 
+// NEW: Media file stored in the separate media repo (CDN-style)
+type MediaFile = {
+  path: string;   // path in media repo
+  sha: string;    // blob sha (for later deletion)
+  url: string;    // raw.githubusercontent.com URL
+};
+
 type Attachment = {
   id: string;
   name: string;
@@ -29,11 +36,13 @@ type Attachment = {
   size: number;
   addedAt: string;
   dataUrl?: string;       // present when in-memory (new upload or lazy-loaded)
-  // New chunked storage (for large files):
-  chunks?: AttachmentChunk[];  // multi-file split storage on GitHub
-  // Legacy single-file storage (backwards compatible):
-  remotePath?: string;    // path inside GitHub repo if stored as single file (legacy)
-  remoteSha?: string;     // GitHub blob SHA of remote file (legacy)
+  // NEW: Media repo storage (preferred). 1 entry = single file; multiple = chunked.
+  media?: MediaFile[];
+  // Legacy chunked storage (kept for backwards compat):
+  chunks?: AttachmentChunk[];
+  // Legacy single-file storage (kept for backwards compat):
+  remotePath?: string;
+  remoteSha?: string;
 };
 
 type DiaryEntry = {
@@ -60,6 +69,9 @@ type GitHubConfig = {
   branch: string;
   path: string;
   token: string;
+  // NEW: separate media repo for storing attachments as raw files
+  mediaOwner: string;    // can be same as `owner` or different account
+  mediaRepo: string;     // a separate (preferably PUBLIC) repo for raw media
 };
 
 type EncryptedFile = {
@@ -96,15 +108,15 @@ const DEFAULT_CONFIG: GitHubConfig = {
   branch: "main",
   path: "data/moonlit-diary-vault.json",
   token: "",
+  mediaOwner: "",
+  mediaRepo: "",
 };
+const MEDIA_BRANCH = "main"; // media repo always uses "main" branch
+// Raw chunk size for media uploads (well under 100MB base64-encoded request limit)
+const MEDIA_CHUNK_SIZE = 40 * 1024 * 1024; // 40MB raw → ~54MB base64 request body
 const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB per file
 const ATTACHMENTS_SUBDIR = "moonlit-attachments"; // sibling to vault file
-// Chunk size for the dataURL STRING. We aim for a final GitHub blob well under 100MB.
-// dataURL chunk → encrypted JSON ~1.35x → base64-for-blob ~1.35x. So 8MB string → ~15MB blob. Plenty of headroom.
-const CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
-// Retry config for transient GitHub API errors (5xx, network blips)
-const MAX_UPLOAD_RETRIES = 4;
-const RETRY_BASE_DELAY_MS = 1500;
+
 
 const MOODS: MoodOption[] = [
   { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
@@ -244,6 +256,9 @@ export default function App() {
       if (!cleanedConfig.token) {
         throw new Error("Add a GitHub token with Contents read and write access.");
       }
+      if (!cleanedConfig.mediaOwner || !cleanedConfig.mediaRepo) {
+        throw new Error("Add a separate PUBLIC media repo (owner + name) for storing photos & videos. See instructions above.");
+      }
       if (!nextPassphrase.trim()) {
         throw new Error("Add the passphrase that unlocks your diary vault.");
       }
@@ -318,46 +333,34 @@ export default function App() {
     setSyncError("");
     setSyncState("saving");
 
+    // Verify media repo is configured
+    if (!config.mediaOwner || !config.mediaRepo) {
+      throw new Error("Configure the Media Repo (owner + repo) in the unlock screen first.");
+    }
+
     try {
-      // Step 1: Upload any new attachments as multiple encrypted chunk files
+      // Step 1: Upload any new attachments to the MEDIA REPO as raw files
       const updatedAttachments: Attachment[] = [];
       for (const att of entry.attachments) {
-        const alreadyRemote = (att.chunks && att.chunks.length > 0) || att.remotePath;
+        const alreadyRemote = (att.media && att.media.length > 0) || (att.chunks && att.chunks.length > 0) || att.remotePath;
         if (att.dataUrl && !alreadyRemote) {
-          // New attachment - split into chunks, encrypt each, upload as separate files
-          const chunks = chunkString(att.dataUrl, CHUNK_SIZE_BYTES);
-          const totalChunks = chunks.length;
-          const uploadedChunks: AttachmentChunk[] = [];
-          console.log(`Uploading ${att.name} (${formatBytes(att.size)}) in ${totalChunks} encrypted chunks...`);
-          for (let i = 0; i < totalChunks; i++) {
-            const chunkPath = getAttachmentChunkPath(config, att.id, i);
-            setSyncError(`Uploading ${att.name} — chunk ${i + 1}/${totalChunks}...`);
-            const encrypted = await encryptAttachmentData(chunks[i], passphrase);
-            const uploaded = await putGitHubFile(
-              config,
-              chunkPath,
-              encrypted,
-              null,
-              `Upload attachment ${att.name} (chunk ${i + 1}/${totalChunks})`,
-            );
-            uploadedChunks.push({ path: chunkPath, sha: uploaded.sha ?? undefined });
-            console.log(`  ✓ chunk ${i + 1}/${totalChunks} uploaded`);
-          }
+          // New attachment - upload raw binary to media repo
+          const mediaFiles = await uploadAttachmentToMediaRepo(config, att);
           updatedAttachments.push({
             ...att,
-            dataUrl: undefined, // Clear from vault, keep only metadata
-            chunks: uploadedChunks,
+            dataUrl: undefined, // strip from vault
+            media: mediaFiles,
+            chunks: undefined,
             remotePath: undefined,
             remoteSha: undefined,
           });
         } else {
-          // Already remote (chunks or legacy single file) - strip dataUrl if any
+          // Already remote - strip dataUrl if any
           updatedAttachments.push({ ...att, dataUrl: undefined });
         }
       }
-      setSyncError("");
 
-      // Step 2: Delete attachment files that were removed from the entry
+      // Step 2: Delete media files that were removed from the entry
       if (oldEntry) {
         const newIds = new Set(updatedAttachments.map(a => a.id));
         const orphans = oldEntry.attachments.filter(a => !newIds.has(a.id));
@@ -715,6 +718,24 @@ function UnlockScreen({
             <Field label="GitHub token">
               <input type="password" value={draftConfig.token} onChange={(event) => updateConfig("token", event.target.value)} placeholder="Fine-grained token with Contents read/write" className="field-input" />
             </Field>
+
+            <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-cyan-200">📸 Media CDN Repo (for photos & videos)</p>
+                <p className="text-xs text-slate-400 mt-1 leading-5">
+                  Create a separate <strong>PUBLIC</strong> GitHub repo (e.g. "moonlit-diary-media") to store your media files.
+                  Your private diary vault stays small and fast; only random-ID URLs are saved in it.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Media owner">
+                  <input value={draftConfig.mediaOwner} onChange={(event) => updateConfig("mediaOwner", event.target.value)} placeholder="your-username" className="field-input" />
+                </Field>
+                <Field label="Media repo (public)">
+                  <input value={draftConfig.mediaRepo} onChange={(event) => updateConfig("mediaRepo", event.target.value)} placeholder="moonlit-diary-media" className="field-input" />
+                </Field>
+              </div>
+            </div>
 
             <Field label="Diary passphrase">
               <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="Only this opens the encrypted vault" className="field-input" />
@@ -1176,11 +1197,32 @@ function EntryEditor({
     onBack();
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, onBack]);
 
-  // Lazy load attachment data when needed - supports both chunked & legacy formats
+  // Lazy load attachment data when needed - supports media (new), chunks (legacy), remotePath (older)
   const loadAttachmentData = useCallback(async (att: Attachment, onProgress?: (msg: string) => void): Promise<string> => {
     if (att.dataUrl) return att.dataUrl;
 
     let dataUrl: string;
+
+    // NEW: media repo (preferred)
+    if (att.media && att.media.length > 0) {
+      if (att.media.length === 1) {
+        // Single file - fetch raw URL and convert to dataURL
+        if (onProgress) onProgress("Downloading from media repo...");
+        dataUrl = await fetchMediaAsDataUrl(att.media[0].url, att.type);
+      } else {
+        // Multiple chunks - fetch all, concat, build dataURL
+        const buffers: ArrayBuffer[] = [];
+        for (let i = 0; i < att.media.length; i++) {
+          if (onProgress) onProgress(`Downloading chunk ${i + 1} of ${att.media.length}...`);
+          const buf = await fetchUrlAsArrayBuffer(att.media[i].url);
+          buffers.push(buf);
+        }
+        if (onProgress) onProgress("Assembling...");
+        dataUrl = arrayBuffersToDataUrl(buffers, att.type);
+      }
+      setAttachments(prev => prev.map(a => a.id === att.id ? { ...a, dataUrl } : a));
+      return dataUrl;
+    }
 
     if (att.chunks && att.chunks.length > 0) {
       // New chunked format - download & decrypt all chunks, concatenate
@@ -1438,7 +1480,9 @@ function AttachmentThumb({
   attachment: Attachment;
   loadAttachmentData: (att: Attachment, onProgress?: (msg: string) => void) => Promise<string>;
 }) {
-  const [thumbUrl, setThumbUrl] = useState<string | null>(attachment.dataUrl ?? null);
+  // FAST PATH: if attachment is stored in media repo as a single file, use raw URL directly!
+  const directUrl = (attachment.media && attachment.media.length === 1) ? attachment.media[0].url : null;
+  const [thumbUrl, setThumbUrl] = useState<string | null>(attachment.dataUrl ?? directUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1447,7 +1491,11 @@ function AttachmentThumb({
       setThumbUrl(attachment.dataUrl);
       return;
     }
-    // Only auto-load images for thumbnails. Videos show placeholder.
+    if (directUrl) {
+      setThumbUrl(directUrl);
+      return;
+    }
+    // For legacy formats: only auto-load images for thumbnails. Videos show placeholder.
     if (attachment.type.startsWith("image/") && !thumbUrl && !loading) {
       setLoading(true);
       loadAttachmentData(attachment)
@@ -1455,7 +1503,7 @@ function AttachmentThumb({
         .catch(err => setError(getErrorMessage(err)))
         .finally(() => setLoading(false));
     }
-  }, [attachment, loadAttachmentData, thumbUrl, loading]);
+  }, [attachment, loadAttachmentData, thumbUrl, loading, directUrl]);
 
   if (loading) {
     return (
@@ -1600,7 +1648,11 @@ function AttachmentPanel({
                 <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
                 <p className="text-xs text-slate-500">
                   {formatBytes(attachment.size)}
-                  {(attachment.chunks && attachment.chunks.length > 0) || attachment.remotePath ? (
+                  {attachment.media && attachment.media.length > 0 ? (
+                    <span className="ml-2 text-emerald-400/60">
+                      • CDN{attachment.media.length > 1 ? ` (${attachment.media.length} parts)` : ""}
+                    </span>
+                  ) : (attachment.chunks && attachment.chunks.length > 0) || attachment.remotePath ? (
                     <span className="ml-2 text-emerald-400/60">
                       • Synced{attachment.chunks && attachment.chunks.length > 1 ? ` (${attachment.chunks.length} chunks)` : ""}
                     </span>
@@ -1684,6 +1736,12 @@ function MediaLightbox({
 
     if (current.dataUrl) {
       setCurrentUrl(current.dataUrl);
+      return;
+    }
+
+    // FAST PATH: media repo with single file → use raw URL directly (instant!)
+    if (current.media && current.media.length === 1) {
+      setCurrentUrl(current.media[0].url);
       return;
     }
 
@@ -2304,36 +2362,31 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
     branch: config.branch.trim() || "main",
     path: config.path.trim().replace(/^\/+/, "") || DEFAULT_CONFIG.path,
     token: config.token.trim(),
+    mediaOwner: (config.mediaOwner || "").trim(),
+    mediaRepo: (config.mediaRepo || "").trim(),
   };
 }
 
-// Get directory for attachments (sibling to vault file)
-function getAttachmentsDir(config: GitHubConfig): string {
-  const vaultDir = config.path.includes("/") ? config.path.substring(0, config.path.lastIndexOf("/")) : "";
-  return vaultDir ? `${vaultDir}/${ATTACHMENTS_SUBDIR}` : ATTACHMENTS_SUBDIR;
-}
 
-// Path for a chunked attachment file: e.g. "data/moonlit-attachments/<id>-c0.json"
-function getAttachmentChunkPath(config: GitHubConfig, attachmentId: string, chunkIndex: number): string {
-  return `${getAttachmentsDir(config)}/${attachmentId}-c${chunkIndex}.json`;
-}
 
-// Split a string into chunks of given byte size (UTF-16 chars in JS strings; dataURLs are ASCII so 1 char = 1 byte)
-function chunkString(str: string, chunkSize: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < str.length; i += chunkSize) {
-    chunks.push(str.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
 
-// Delete all files belonging to an attachment (both chunked and legacy formats)
+
+// Delete all files belonging to an attachment (media repo + legacy formats)
 async function deleteAttachmentFiles(config: GitHubConfig, att: Attachment): Promise<void> {
-  // Delete chunks (new format)
+  // NEW: Delete media repo files
+  if (att.media && att.media.length > 0 && config.mediaOwner && config.mediaRepo) {
+    for (const m of att.media) {
+      try {
+        await deleteMediaRepoFile(config, m.path, m.sha, `Delete media ${m.path}`);
+      } catch (e) {
+        console.warn(`Failed to delete media file ${m.path}:`, e);
+      }
+    }
+  }
+  // Legacy: Delete chunks in main repo
   if (att.chunks && att.chunks.length > 0) {
     for (const chunk of att.chunks) {
       try {
-        // Need to fetch sha if not cached (e.g. after reload sha might be stale)
         let sha = chunk.sha;
         if (!sha) {
           const remote = await fetchGitHubFile(config, chunk.path);
@@ -2348,7 +2401,7 @@ async function deleteAttachmentFiles(config: GitHubConfig, att: Attachment): Pro
       }
     }
   }
-  // Delete legacy single file
+  // Legacy: Delete legacy single file
   if (att.remotePath) {
     try {
       let sha = att.remoteSha;
@@ -2366,14 +2419,184 @@ async function deleteAttachmentFiles(config: GitHubConfig, att: Attachment): Pro
   }
 }
 
+// ============================================================================
+// MEDIA REPO (CDN) helpers - upload raw files, get raw URLs
+// ============================================================================
+
+function getMediaRawUrl(config: GitHubConfig, path: string): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `https://raw.githubusercontent.com/${encodeURIComponent(config.mediaOwner)}/${encodeURIComponent(config.mediaRepo)}/${encodeURIComponent(MEDIA_BRANCH)}/${encodedPath}`;
+}
+
+function getFileExtensionFromName(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.substring(i) : "";
+}
+
+// Convert a dataURL string into an ArrayBuffer (the raw binary)
+function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
+  const commaIdx = dataUrl.indexOf(",");
+  const base64 = commaIdx >= 0 ? dataUrl.substring(commaIdx + 1) : dataUrl;
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// Convert an ArrayBuffer to a base64 string (for GitHub blob upload)
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  return bytesToBase64(new Uint8Array(buffer));
+}
+
+// Combine multiple ArrayBuffers into one dataURL of the given mime type
+function arrayBuffersToDataUrl(buffers: ArrayBuffer[], mimeType: string): string {
+  // Combine all
+  const totalLen = buffers.reduce((s, b) => s + b.byteLength, 0);
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const b of buffers) {
+    merged.set(new Uint8Array(b), offset);
+    offset += b.byteLength;
+  }
+  const base64 = bytesToBase64(merged);
+  return `data:${mimeType || "application/octet-stream"};base64,${base64}`;
+}
+
+// Fetch a raw URL and return as ArrayBuffer
+async function fetchUrlAsArrayBuffer(url: string): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url} (HTTP ${res.status}). If the media repo is private, make it public.`);
+  return await res.arrayBuffer();
+}
+
+// Fetch a raw URL and return as dataURL string
+async function fetchMediaAsDataUrl(url: string, mimeType: string): Promise<string> {
+  const buf = await fetchUrlAsArrayBuffer(url);
+  return arrayBuffersToDataUrl([buf], mimeType);
+}
+
+// Upload an attachment to the media repo. Returns list of MediaFile entries
+// (one for small files, multiple chunks for large files).
+async function uploadAttachmentToMediaRepo(
+  config: GitHubConfig,
+  att: Attachment,
+): Promise<MediaFile[]> {
+  if (!att.dataUrl) throw new Error(`Attachment ${att.name} has no data to upload.`);
+  const buffer = dataUrlToArrayBuffer(att.dataUrl);
+  const ext = getFileExtensionFromName(att.name);
+
+  // Single file path for small files
+  if (buffer.byteLength <= MEDIA_CHUNK_SIZE) {
+    const path = `${ATTACHMENTS_SUBDIR}/${att.id}${ext}`;
+    const result = await putMediaRepoBinary(config, path, buffer, `Upload ${att.name}`);
+    return [{ path, sha: result.sha, url: getMediaRawUrl(config, path) }];
+  }
+
+  // Chunked upload for big files
+  const numChunks = Math.ceil(buffer.byteLength / MEDIA_CHUNK_SIZE);
+  const out: MediaFile[] = [];
+  for (let i = 0; i < numChunks; i++) {
+    const start = i * MEDIA_CHUNK_SIZE;
+    const end = Math.min(start + MEDIA_CHUNK_SIZE, buffer.byteLength);
+    const slice = buffer.slice(start, end);
+    const path = `${ATTACHMENTS_SUBDIR}/${att.id}.part${i}`;
+    const result = await putMediaRepoBinary(config, path, slice, `Upload ${att.name} chunk ${i + 1}/${numChunks}`);
+    out.push({ path, sha: result.sha, url: getMediaRawUrl(config, path) });
+  }
+  return out;
+}
+
+// PUT a binary file to the media repo using Git Data API (handles up to ~95MB per file)
+async function putMediaRepoBinary(
+  config: GitHubConfig,
+  path: string,
+  buffer: ArrayBuffer,
+  message: string,
+): Promise<{ sha: string }> {
+  const repoBase = `https://api.github.com/repos/${encodeURIComponent(config.mediaOwner)}/${encodeURIComponent(config.mediaRepo)}`;
+  const headers = githubHeaders(config);
+  const base64Content = arrayBufferToBase64(buffer);
+
+  // Step 1: Get latest commit on branch
+  const refResp = await fetch(`${repoBase}/git/ref/heads/${encodeURIComponent(MEDIA_BRANCH)}`, { headers });
+  if (!refResp.ok) {
+    if (refResp.status === 404) {
+      throw new Error(`Media repo "${config.mediaOwner}/${config.mediaRepo}" not found or its "${MEDIA_BRANCH}" branch is missing. Create the repo with an initial README commit, then try again.`);
+    }
+    throw new Error(await githubErrorMessage(refResp));
+  }
+  const refData = await refResp.json() as { object: { sha: string } };
+  const currentCommitSha = refData.object.sha;
+
+  // Step 2: Get tree sha
+  const commitResp = await fetch(`${repoBase}/git/commits/${currentCommitSha}`, { headers });
+  if (!commitResp.ok) throw new Error(await githubErrorMessage(commitResp));
+  const commitData = await commitResp.json() as { tree: { sha: string } };
+  const baseTreeSha = commitData.tree.sha;
+
+  // Step 3: Create blob
+  const blobResp = await fetch(`${repoBase}/git/blobs`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ content: base64Content, encoding: "base64" }),
+  });
+  if (!blobResp.ok) {
+    const msg = await githubErrorMessage(blobResp);
+    throw new Error(`Failed to upload ${path}: ${msg}`);
+  }
+  const blobData = await blobResp.json() as { sha: string };
+
+  // Step 4: Create new tree
+  const treeResp = await fetch(`${repoBase}/git/trees`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      base_tree: baseTreeSha,
+      tree: [{ path, mode: "100644", type: "blob", sha: blobData.sha }],
+    }),
+  });
+  if (!treeResp.ok) throw new Error(await githubErrorMessage(treeResp));
+  const treeData = await treeResp.json() as { sha: string };
+
+  // Step 5: Create commit
+  const newCommitResp = await fetch(`${repoBase}/git/commits`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ message, tree: treeData.sha, parents: [currentCommitSha] }),
+  });
+  if (!newCommitResp.ok) throw new Error(await githubErrorMessage(newCommitResp));
+  const newCommitData = await newCommitResp.json() as { sha: string };
+
+  // Step 6: Update branch ref
+  const updateRefResp = await fetch(`${repoBase}/git/refs/heads/${encodeURIComponent(MEDIA_BRANCH)}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ sha: newCommitData.sha, force: false }),
+  });
+  if (!updateRefResp.ok) throw new Error(await githubErrorMessage(updateRefResp));
+
+  return { sha: blobData.sha };
+}
+
+// Delete a file from the media repo using Contents API
+async function deleteMediaRepoFile(config: GitHubConfig, path: string, sha: string, message: string): Promise<void> {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const url = `https://api.github.com/repos/${encodeURIComponent(config.mediaOwner)}/${encodeURIComponent(config.mediaRepo)}/contents/${encodedPath}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: githubHeaders(config),
+    body: JSON.stringify({ message, sha, branch: MEDIA_BRANCH }),
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await githubErrorMessage(response));
+  }
+}
+
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
   return encryptDataAsJson(JSON.stringify(vault), passphrase, "moonlit-diary-encrypted-vault");
 }
 
-// Encrypt an attachment's data URL string for individual file storage
-async function encryptAttachmentData(dataUrl: string, passphrase: string): Promise<string> {
-  return encryptDataAsJson(dataUrl, passphrase, "moonlit-diary-encrypted-attachment");
-}
+
 
 async function decryptAttachmentData(file: EncryptedFile, passphrase: string): Promise<string> {
   return decryptEncryptedFile(file, passphrase);
@@ -2494,21 +2717,7 @@ async function fetchGitHubFile(config: GitHubConfig, path: string): Promise<{ ex
 }
 
 // Put a file to GitHub. For files > 1MB, uses Git Data API (blobs/trees/commits).
-// Wrapped in retry-with-backoff so transient GitHub 5xx errors don't kill the save.
 async function putGitHubFile(
-  config: GitHubConfig,
-  path: string,
-  text: string,
-  sha: string | null,
-  message: string,
-): Promise<{ sha: string | null }> {
-  return withRetry(
-    () => putGitHubFileOnce(config, path, text, sha, message),
-    { attempts: MAX_UPLOAD_RETRIES, baseDelayMs: RETRY_BASE_DELAY_MS, label: `PUT ${path}` },
-  );
-}
-
-async function putGitHubFileOnce(
   config: GitHubConfig,
   path: string,
   text: string,
@@ -2519,7 +2728,7 @@ async function putGitHubFileOnce(
   const useGitDataAPI = fileSizeBytes > 800 * 1024; // Use Git Data API for files over ~800KB to avoid Contents API limits
 
   if (useGitDataAPI) {
-    return putGitHubFileViaGitDataOnce(config, path, text, message);
+    return putGitHubFileViaGitData(config, path, text, message);
   }
 
   // Small files: use Contents API
@@ -2537,9 +2746,9 @@ async function putGitHubFileOnce(
   });
 
   if (!response.ok) {
-    // If Contents API fails with 5xx/413/422, fall back to Git Data API and let the retry wrapper handle it
+    // If Contents API fails for any reason, fall back to Git Data API
     if (response.status >= 500 || response.status === 413 || response.status === 422) {
-      return putGitHubFileViaGitDataOnce(config, path, text, message);
+      return putGitHubFileViaGitData(config, path, text, message);
     }
     throw new Error(await githubErrorMessage(response));
   }
@@ -2549,20 +2758,7 @@ async function putGitHubFileOnce(
 }
 
 // Use Git Data API for large files (up to ~100MB per blob)
-// Wrapped in retry-with-backoff so transient GitHub 5xx errors don't kill the save.
 async function putGitHubFileViaGitData(
-  config: GitHubConfig,
-  path: string,
-  text: string,
-  message: string,
-): Promise<{ sha: string | null }> {
-  return withRetry(
-    () => putGitHubFileViaGitDataOnce(config, path, text, message),
-    { attempts: MAX_UPLOAD_RETRIES, baseDelayMs: RETRY_BASE_DELAY_MS, label: `GitData PUT ${path}` },
-  );
-}
-
-async function putGitHubFileViaGitDataOnce(
   config: GitHubConfig,
   path: string,
   text: string,
@@ -2661,53 +2857,6 @@ async function deleteGitHubFile(config: GitHubConfig, path: string, sha: string,
 function gitHubContentUrl(config: GitHubConfig, path: string) {
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(config.branch)}`;
-}
-
-// ============================================================================
-// Retry helper for transient GitHub API failures
-// ============================================================================
-
-type RetryOptions = {
-  attempts?: number;
-  baseDelayMs?: number;
-  label?: string;
-};
-
-function isRetryableError(err: unknown): boolean {
-  // Retry on GitHub 5xx (server errors) and 429 (rate limit)
-  if (err instanceof Error) {
-    if (/GitHub\s+5\d\d/.test(err.message)) return true;
-    if (/GitHub\s+429/.test(err.message)) return true;
-    // Network-level failures
-    if (/Failed to fetch|NetworkError|network/i.test(err.message)) return true;
-  }
-  return false;
-}
-
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions = {},
-): Promise<T> {
-  const { attempts = MAX_UPLOAD_RETRIES, baseDelayMs = RETRY_BASE_DELAY_MS, label = "request" } = options;
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if (attempt < attempts && isRetryableError(err)) {
-        const delay = baseDelayMs * Math.pow(2, attempt - 1);
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[${label}] attempt ${attempt}/${attempts} failed: ${msg}. Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw lastError;
 }
 
 function githubHeaders(config: GitHubConfig): HeadersInit {

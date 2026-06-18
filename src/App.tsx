@@ -168,7 +168,7 @@ function parseReadableDateToISO(readableDate: string): string | null {
 /**
  * Renders AI response text, turning readable date strings into clickable system buttons
  */
-export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
+export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIResponseRendererProps & { allowedDates?: Set<string> }) {
   // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
   const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
   
@@ -186,7 +186,7 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
     const rawReadableDate = match[0];
     const isoDate = parseReadableDateToISO(rawReadableDate);
     
-    if (isoDate) {
+    if (isoDate && (!allowedDates || allowedDates.has(isoDate))) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
@@ -1826,7 +1826,11 @@ function AIIntelligenceView({
               <span className="text-cyan-400/50 text-[10px]">(Click any date to jump to that entry)</span>
             </h4>
             <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-              <AIResponseRenderer text={aiAnswer} onDateClick={onJumpToEntry} />
+              <AIResponseRenderer
+                text={aiAnswer}
+                onDateClick={onJumpToEntry}
+                allowedDates={useMemo(() => new Set(entries.map((e) => e.date)), [entries])}
+              />
             </p>
           </div>
         )}

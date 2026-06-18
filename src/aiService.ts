@@ -186,3 +186,101 @@ Output ONLY a comma-separated list.`;
     return [];
   }
 }
+
+
+/**
+ * PURE AI EMOTION ASSESSMENT
+ * Uses Groq/Llama to understand the actual emotional tone of a journal entry.
+ */
+export async function assessEntryEmotion(input: {
+  title?: string;
+  bodyHtml: string;
+  date?: string;
+}): Promise<string> {
+  if (!API_KEY) return "AI unavailable";
+
+  const cleanText = input.bodyHtml
+    .replace(/<\/?[^>]+(>|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const title = input.title?.trim() || "Untitled";
+
+  if (!cleanText && !title) return "Neutral";
+
+  const prompt = `
+You are an AI emotional assessment engine for a private diary app.
+
+Analyze this journal entry like a thoughtful emotional intelligence system.
+You understand English, Hinglish, Hindi written in Roman script, slang, abbreviations, sarcasm, mixed emotions, and indirect emotional cues.
+
+Diary date: ${input.date || "unknown"}
+Title: ${title}
+Entry:
+${cleanText}
+
+Your task:
+Return ONLY one short AI assessment label, 1 to 6 words max.
+
+The label should capture the user's real emotional state, not just positive/negative sentiment.
+Examples:
+- Anxious but hopeful
+- Quietly overwhelmed
+- Angry and restless
+- Joyful and energized
+- Emotionally drained
+- Romantic and nostalgic
+- Confused but curious
+- Hurt yet reflective
+- Hyper and chaotic
+- Calm and grounded
+- Lonely and tired
+- Proud but exhausted
+
+Rules:
+- Do NOT explain.
+- Do NOT give advice.
+- Do NOT diagnose mental health conditions.
+- Do NOT output JSON.
+- Output only the final assessment label.
+`;
+
+  try {
+    const response = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL_NAME,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a concise emotional intelligence classifier for private journal entries. Output only a short emotional assessment label.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.25,
+        max_tokens: 40,
+      }),
+    });
+
+    if (!response.ok) return "AI unavailable";
+
+    const data = await response.json();
+    const raw = data.choices?.[0]?.message?.content || "Neutral";
+
+    return raw
+      .trim()
+      .replace(/^["'`]+|["'`.]+$/g, "")
+      .split("\n")[0]
+      .slice(0, 70);
+  } catch {
+    return "AI unavailable";
+  }
+}

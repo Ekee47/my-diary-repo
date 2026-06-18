@@ -99,9 +99,12 @@ const DEFAULT_CONFIG: GitHubConfig = {
 };
 const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB per file
 const ATTACHMENTS_SUBDIR = "moonlit-attachments"; // sibling to vault file
-// Chunk size for the dataURL STRING. We aim for a final GitHub blob <100MB.
-// dataURL chunk → encrypted JSON ~1.35x → base64-for-blob ~1.35x. So 15MB string → ~27MB blob. Very safe.
-const CHUNK_SIZE_BYTES = 15 * 1024 * 1024;
+// Chunk size for the dataURL STRING. We aim for a final GitHub blob well under 100MB.
+// dataURL chunk → encrypted JSON ~1.35x → base64-for-blob ~1.35x. So 8MB string → ~15MB blob. Plenty of headroom.
+const CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
+// Retry config for transient GitHub API errors (5xx, network blips)
+const MAX_UPLOAD_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 1500;
 
 const MOODS: MoodOption[] = [
   { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
@@ -323,18 +326,22 @@ export default function App() {
         if (att.dataUrl && !alreadyRemote) {
           // New attachment - split into chunks, encrypt each, upload as separate files
           const chunks = chunkString(att.dataUrl, CHUNK_SIZE_BYTES);
+          const totalChunks = chunks.length;
           const uploadedChunks: AttachmentChunk[] = [];
-          for (let i = 0; i < chunks.length; i++) {
+          console.log(`Uploading ${att.name} (${formatBytes(att.size)}) in ${totalChunks} encrypted chunks...`);
+          for (let i = 0; i < totalChunks; i++) {
             const chunkPath = getAttachmentChunkPath(config, att.id, i);
+            setSyncError(`Uploading ${att.name} — chunk ${i + 1}/${totalChunks}...`);
             const encrypted = await encryptAttachmentData(chunks[i], passphrase);
             const uploaded = await putGitHubFile(
               config,
               chunkPath,
               encrypted,
               null,
-              `Upload attachment ${att.name} (chunk ${i + 1}/${chunks.length})`,
+              `Upload attachment ${att.name} (chunk ${i + 1}/${totalChunks})`,
             );
             uploadedChunks.push({ path: chunkPath, sha: uploaded.sha ?? undefined });
+            console.log(`  ✓ chunk ${i + 1}/${totalChunks} uploaded`);
           }
           updatedAttachments.push({
             ...att,
@@ -348,6 +355,7 @@ export default function App() {
           updatedAttachments.push({ ...att, dataUrl: undefined });
         }
       }
+      setSyncError("");
 
       // Step 2: Delete attachment files that were removed from the entry
       if (oldEntry) {
@@ -2486,7 +2494,21 @@ async function fetchGitHubFile(config: GitHubConfig, path: string): Promise<{ ex
 }
 
 // Put a file to GitHub. For files > 1MB, uses Git Data API (blobs/trees/commits).
+// Wrapped in retry-with-backoff so transient GitHub 5xx errors don't kill the save.
 async function putGitHubFile(
+  config: GitHubConfig,
+  path: string,
+  text: string,
+  sha: string | null,
+  message: string,
+): Promise<{ sha: string | null }> {
+  return withRetry(
+    () => putGitHubFileOnce(config, path, text, sha, message),
+    { attempts: MAX_UPLOAD_RETRIES, baseDelayMs: RETRY_BASE_DELAY_MS, label: `PUT ${path}` },
+  );
+}
+
+async function putGitHubFileOnce(
   config: GitHubConfig,
   path: string,
   text: string,
@@ -2497,7 +2519,7 @@ async function putGitHubFile(
   const useGitDataAPI = fileSizeBytes > 800 * 1024; // Use Git Data API for files over ~800KB to avoid Contents API limits
 
   if (useGitDataAPI) {
-    return putGitHubFileViaGitData(config, path, text, message);
+    return putGitHubFileViaGitDataOnce(config, path, text, message);
   }
 
   // Small files: use Contents API
@@ -2515,9 +2537,9 @@ async function putGitHubFile(
   });
 
   if (!response.ok) {
-    // If Contents API fails for any reason, fall back to Git Data API
+    // If Contents API fails with 5xx/413/422, fall back to Git Data API and let the retry wrapper handle it
     if (response.status >= 500 || response.status === 413 || response.status === 422) {
-      return putGitHubFileViaGitData(config, path, text, message);
+      return putGitHubFileViaGitDataOnce(config, path, text, message);
     }
     throw new Error(await githubErrorMessage(response));
   }
@@ -2527,7 +2549,20 @@ async function putGitHubFile(
 }
 
 // Use Git Data API for large files (up to ~100MB per blob)
+// Wrapped in retry-with-backoff so transient GitHub 5xx errors don't kill the save.
 async function putGitHubFileViaGitData(
+  config: GitHubConfig,
+  path: string,
+  text: string,
+  message: string,
+): Promise<{ sha: string | null }> {
+  return withRetry(
+    () => putGitHubFileViaGitDataOnce(config, path, text, message),
+    { attempts: MAX_UPLOAD_RETRIES, baseDelayMs: RETRY_BASE_DELAY_MS, label: `GitData PUT ${path}` },
+  );
+}
+
+async function putGitHubFileViaGitDataOnce(
   config: GitHubConfig,
   path: string,
   text: string,
@@ -2626,6 +2661,53 @@ async function deleteGitHubFile(config: GitHubConfig, path: string, sha: string,
 function gitHubContentUrl(config: GitHubConfig, path: string) {
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(config.branch)}`;
+}
+
+// ============================================================================
+// Retry helper for transient GitHub API failures
+// ============================================================================
+
+type RetryOptions = {
+  attempts?: number;
+  baseDelayMs?: number;
+  label?: string;
+};
+
+function isRetryableError(err: unknown): boolean {
+  // Retry on GitHub 5xx (server errors) and 429 (rate limit)
+  if (err instanceof Error) {
+    if (/GitHub\s+5\d\d/.test(err.message)) return true;
+    if (/GitHub\s+429/.test(err.message)) return true;
+    // Network-level failures
+    if (/Failed to fetch|NetworkError|network/i.test(err.message)) return true;
+  }
+  return false;
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions = {},
+): Promise<T> {
+  const { attempts = MAX_UPLOAD_RETRIES, baseDelayMs = RETRY_BASE_DELAY_MS, label = "request" } = options;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts && isRetryableError(err)) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[${label}] attempt ${attempt}/${attempts} failed: ${msg}. Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError;
 }
 
 function githubHeaders(config: GitHubConfig): HeadersInit {

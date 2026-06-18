@@ -1888,36 +1888,28 @@ function AIIntelligenceView({
       <aside className="space-y-4 animate-float-in">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
           <div className="flex items-center justify-between">
-  <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood Graph</p>
-  <span className="text-[10px] text-slate-500">{entries.length} entries</span>
-</div>
+            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood Graph (Pie)</p>
+            <span className="text-[10px] text-slate-500">{entries.length} entries</span>
+          </div>
 
-          <div className="space-y-3 pt-2">
-            {MOODS.map((m) => {
-              const count = emotionalDistribution[m.id] || 0;
-              const normalizedPct = (count / maxDistributionCount) * 100;
-              return (
-                <div key={m.id} className="space-y-1">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-white font-medium flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
+          <div className="pt-2 flex items-start gap-4">
+            <MoodPieChart moods={MOODS} distribution={emotionalDistribution} />
+
+            <div className="flex-1 space-y-2">
+              {MOODS.map((m) => {
+                const count = emotionalDistribution[m.id] || 0;
+                const pct = entries.length ? (count / entries.length) * 100 : 0;
+                return (
+                  <div key={m.id} className="flex items-center justify-between text-xs">
+                    <span className="text-white font-medium flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: m.color, boxShadow: `0 0 12px ${m.glow}` }} />
                       {m.label}
                     </span>
-                    <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
+                    <span className="text-slate-500">{count} ({pct.toFixed(0)}%)</span>
                   </div>
-                  <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${normalizedPct}%`,
-                        backgroundColor: m.color,
-                        boxShadow: `0 0 10px ${m.glow}`,
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </section>
 
@@ -1956,6 +1948,64 @@ function AIIntelligenceView({
   );
 }
 
+function MoodPieChart({
+  moods,
+  distribution,
+}: {
+  moods: MoodOption[];
+  distribution: Record<MoodId, number>;
+}) {
+  const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
+  const normalized = total || 1;
+
+  let cumulative = 0;
+  const radius = 44;
+  const stroke = 12;
+
+  return (
+    <div className="relative flex-shrink-0">
+      <div className="relative">
+        <svg width={120} height={120} viewBox="0 0 120 120" className="drop-shadow">
+          <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
+          {moods.map((m) => {
+            const value = distribution[m.id] || 0;
+            const fraction = value / normalized;
+            const dash = 2 * Math.PI * radius;
+            const seg = dash * fraction;
+            const offset = dash * (1 - cumulative);
+            cumulative += fraction;
+
+            return (
+              <circle
+                key={m.id}
+                cx="60"
+                cy="60"
+                r={radius}
+                stroke={m.color}
+                strokeWidth={stroke}
+                strokeLinecap="round"
+                fill="none"
+                strokeDasharray={`${seg} ${dash - seg}`}
+                strokeDashoffset={offset}
+                transform="rotate(-90 60 60)"
+                style={{
+                  filter: `drop-shadow(0 0 10px ${m.glow})`,
+                }}
+              />
+            );
+          })}
+        </svg>
+
+        <div className="absolute inset-0 flex items-center justify-center flex-col text-center">
+          <div className="text-[10px] uppercase tracking-widest text-cyan-100/50">mood mix</div>
+          <div className="text-lg font-semibold text-white">{total}</div>
+          <div className="text-[10px] text-slate-400">entries</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MoodLegend() {
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
@@ -1972,6 +2022,7 @@ function MoodLegend() {
     </section>
   );
 }
+
 
 function MoodChip({ mood }: { mood: MoodId }) {
   const option = MOOD_BY_ID[mood];

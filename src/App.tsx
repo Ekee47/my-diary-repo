@@ -73,6 +73,7 @@ const DEFAULT_CONFIG: GitHubConfig = {
   path: "data/moonlit-diary-vault.json",
   token: "",
 };
+const AUTO_SAVE_DEBOUNCE_MS = 1500; // auto-save 1.5s after the user stops typing
 
 const MOODS: MoodOption[] = [
   { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
@@ -98,34 +99,31 @@ const SEMANTIC_DICTIONARY: Record<string, string[]> = {
   stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
 };
 
+/* ------------------------------------------------------------------ */
+/*  AIResponseRenderer – turns [1st July 2026] into clickable dates   */
+/* ------------------------------------------------------------------ */
 interface AIResponseRendererProps {
   text: string;
   onDateClick: (isoDateStr: string) => void;
 }
 
-/**
- * Converts text like "1st july 2026" into standard "2026-07-01"
- */
 function parseReadableDateToISO(readableDate: string): string {
   const clean = readableDate.toLowerCase().trim();
   const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([a-z]+)\s+(\d{4})$/);
   if (!match) return readableDate;
-  
-  const day = match[1].padStart(2, '0');
+
+  const day = match[1].padStart(2, "0");
   const monthName = match[2];
   const year = match[3];
-  
+
   const months: Record<string, string> = {
-    january: '01', february: '02', march: '03', april: '04', may: '05', june: '06',
-    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+    january: "01", february: "02", march: "03", april: "04", may: "05", june: "06",
+    july: "07", august: "08", september: "09", october: "10", november: "11", december: "12",
   };
-  
-  return `${year}-${months[monthName] || '01'}-${day}`;
+
+  return `${year}-${months[monthName] || "01"}-${day}`;
 }
 
-/**
- * Renders AI response text, turning readable date strings into clickable system buttons
- */
 export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
   const dateRegex = /(\[\d{1,2}(?:st|nd|rd|th)\s+[a-zA-Z]+\s+\d{4}\])/gi;
   const parts = text.split(dateRegex);
@@ -136,21 +134,19 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
         if (dateRegex.test(part)) {
           const rawReadableDate = part.replace(/[\[\]]/g, "");
           const isoDate = parseReadableDateToISO(rawReadableDate);
-          
+
           return (
             <button
               key={index}
               onClick={() => onDateClick(isoDate)}
-              className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors"
+              className="inline font-bold text-cyan-400 hover:text-cyan-300 hover:underline transition-colors"
               style={{
-                background: 'none',
-                border: 'none',
+                background: "none",
+                border: "none",
                 padding: 0,
-                font: 'inherit',
-                color: '#22d3ee',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                textDecoration: 'underline'
+                font: "inherit",
+                cursor: "pointer",
+                textDecoration: "underline",
               }}
             >
               {rawReadableDate}
@@ -163,7 +159,9 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
   );
 }
 
-
+/* ------------------------------------------------------------------ */
+/*  MAIN APP                                                           */
+/* ------------------------------------------------------------------ */
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);
@@ -187,6 +185,7 @@ export default function App() {
     return map;
   }, [vault.entries]);
 
+  /* ---- unlock ---------------------------------------------------- */
   async function unlockVault(nextConfig: GitHubConfig, nextPassphrase: string, rememberConfig: boolean) {
     const cleanedConfig = normalizeConfig(nextConfig);
     setSyncError("");
@@ -196,11 +195,9 @@ export default function App() {
       if (!cleanedConfig.owner || !cleanedConfig.repo || !cleanedConfig.branch || !cleanedConfig.path) {
         throw new Error("Add your GitHub owner, repo, branch, and vault file path.");
       }
-
       if (!cleanedConfig.token) {
         throw new Error("Add a GitHub token with Contents read and write access.");
       }
-
       if (!nextPassphrase.trim()) {
         throw new Error("Add the passphrase that unlocks your diary vault.");
       }
@@ -214,12 +211,7 @@ export default function App() {
         nextVault = await openVaultFile(parsed, nextPassphrase);
       } else {
         const encrypted = await encryptVault(nextVault, nextPassphrase);
-        const created = await putGitHubVaultFile(
-          cleanedConfig,
-          encrypted,
-          null,
-          "Create encrypted Moonlit Diary vault",
-        );
+        const created = await putGitHubVaultFile(cleanedConfig, encrypted, null, "Create encrypted Moonlit Diary vault");
         nextSha = created.sha;
       }
 
@@ -249,10 +241,7 @@ export default function App() {
 
     try {
       const remote = await fetchGitHubVaultFile(config);
-      if (!remote.exists || !remote.text.trim()) {
-        throw new Error("The vault file was not found on GitHub.");
-      }
-
+      if (!remote.exists || !remote.text.trim()) throw new Error("The vault file was not found on GitHub.");
       const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
       const nextVault = await openVaultFile(parsed, passphrase);
       setVault(nextVault);
@@ -265,10 +254,7 @@ export default function App() {
   }
 
   async function persistVault(nextVault: VaultData, commitMessage: string) {
-    if (!config || !passphrase) {
-      throw new Error("Unlock your GitHub vault before saving.");
-    }
-
+    if (!config || !passphrase) throw new Error("Unlock your GitHub vault before saving.");
     setSyncError("");
     setSyncState("saving");
 
@@ -285,6 +271,7 @@ export default function App() {
     }
   }
 
+  /* ---- save (full, then navigate home) --------------------------- */
   async function saveEntry(entry: DiaryEntry) {
     const entries = vault.entries.filter((item) => item.date !== entry.date);
     const nextVault: VaultData = {
@@ -292,11 +279,22 @@ export default function App() {
       updatedAt: new Date().toISOString(),
       entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
     };
-
     await persistVault(nextVault, `Save diary entry for ${entry.date}`);
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
+  }
+
+  /* ---- save-in-place (auto-save – stays on entry screen) -------- */
+  async function saveEntryInPlace(entry: DiaryEntry) {
+    const entries = vault.entries.filter((item) => item.date !== entry.date);
+    const nextVault: VaultData = {
+      ...vault,
+      updatedAt: new Date().toISOString(),
+      entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
+    };
+    await persistVault(nextVault, `Auto-save draft for ${entry.date}`);
+    // keep the user on the current screen
   }
 
   async function deleteEntry(dateKey: string) {
@@ -305,7 +303,6 @@ export default function App() {
       updatedAt: new Date().toISOString(),
       entries: vault.entries.filter((entry) => entry.date !== dateKey),
     };
-
     await persistVault(nextVault, `Delete diary entry for ${dateKey}`);
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
@@ -329,6 +326,7 @@ export default function App() {
     setScreen("home");
   }
 
+  /* ---- render ---------------------------------------------------- */
   if (!isUnlocked) {
     return (
       <UnlockScreen
@@ -384,6 +382,7 @@ export default function App() {
               syncState={syncState}
               onBack={() => setScreen("home")}
               onSave={saveEntry}
+              onSaveInPlace={saveEntryInPlace}
               onDelete={deleteEntry}
             />
           ) : null}
@@ -413,6 +412,9 @@ export default function App() {
   );
 }
 
+/* ================================================================== */
+/*  UNLOCK SCREEN                                                      */
+/* ================================================================== */
 function UnlockScreen({
   initialConfig,
   syncState,
@@ -486,76 +488,35 @@ function UnlockScreen({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="GitHub owner">
-                <input
-                  value={draftConfig.owner}
-                  onChange={(event) => updateConfig("owner", event.target.value)}
-                  placeholder="your-username"
-                  className="field-input"
-                />
+                <input value={draftConfig.owner} onChange={(event) => updateConfig("owner", event.target.value)} placeholder="your-username" className="field-input" />
               </Field>
               <Field label="Repository">
-                <input
-                  value={draftConfig.repo}
-                  onChange={(event) => updateConfig("repo", event.target.value)}
-                  placeholder="my-diary-repo"
-                  className="field-input"
-                />
+                <input value={draftConfig.repo} onChange={(event) => updateConfig("repo", event.target.value)} placeholder="my-diary-repo" className="field-input" />
               </Field>
               <Field label="Branch">
-                <input
-                  value={draftConfig.branch}
-                  onChange={(event) => updateConfig("branch", event.target.value)}
-                  placeholder="main"
-                  className="field-input"
-                />
+                <input value={draftConfig.branch} onChange={(event) => updateConfig("branch", event.target.value)} placeholder="main" className="field-input" />
               </Field>
               <Field label="Vault file path">
-                <input
-                  value={draftConfig.path}
-                  onChange={(event) => updateConfig("path", event.target.value)}
-                  placeholder="data/moonlit-diary-vault.json"
-                  className="field-input"
-                />
+                <input value={draftConfig.path} onChange={(event) => updateConfig("path", event.target.value)} placeholder="data/moonlit-diary-vault.json" className="field-input" />
               </Field>
             </div>
 
             <Field label="GitHub token">
-              <input
-                type="password"
-                value={draftConfig.token}
-                onChange={(event) => updateConfig("token", event.target.value)}
-                placeholder="Fine-grained token with Contents read/write"
-                className="field-input"
-              />
+              <input type="password" value={draftConfig.token} onChange={(event) => updateConfig("token", event.target.value)} placeholder="Fine-grained token with Contents read/write" className="field-input" />
             </Field>
 
             <Field label="Diary passphrase">
-              <input
-                type="password"
-                value={passphrase}
-                onChange={(event) => setPassphrase(event.target.value)}
-                placeholder="Only this opens the encrypted vault"
-                className="field-input"
-              />
+              <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="Only this opens the encrypted vault" className="field-input" />
             </Field>
 
             <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={rememberConfig}
-                onChange={(event) => setRememberConfig(event.target.checked)}
-                className="h-4 w-4 accent-cyan-300"
-              />
+              <input type="checkbox" checked={rememberConfig} onChange={(event) => setRememberConfig(event.target.checked)} className="h-4 w-4 accent-cyan-300" />
               Remember GitHub details on this device. Diary data still stays in the GitHub vault file.
             </label>
 
             {syncError ? <SyncError message={syncError} compact /> : null}
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="group relative w-full overflow-hidden rounded-2xl bg-cyan-200 px-5 py-4 text-sm font-semibold uppercase tracking-[0.26em] text-slate-950 shadow-2xl shadow-cyan-500/25 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
+            <button type="submit" disabled={isLoading} className="group relative w-full overflow-hidden rounded-2xl bg-cyan-200 px-5 py-4 text-sm font-semibold uppercase tracking-[0.26em] text-slate-950 shadow-2xl shadow-cyan-500/25 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
               <span className="relative z-10">{isLoading ? "Opening vault..." : "Unlock diary"}</span>
               <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/60 to-transparent transition duration-700 group-hover:translate-x-full" />
             </button>
@@ -566,6 +527,9 @@ function UnlockScreen({
   );
 }
 
+/* ================================================================== */
+/*  TOP BAR                                                            */
+/* ================================================================== */
 function TopBar({
   syncState,
   currentScreen,
@@ -600,25 +564,15 @@ function TopBar({
 
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
-        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
-          Calendar
-        </button>
+        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>Calendar</button>
         <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
           <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
           <span className="relative flex items-center gap-1">✨ AI Hub</span>
         </button>
-        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
-          Year in pixels
-        </button>
-        <button type="button" onClick={onNewEntry} className="nav-button-primary">
-          New entry
-        </button>
-        <button type="button" onClick={onSync} className="nav-button">
-          Sync
-        </button>
-        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
-          Lock
-        </button>
+        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>Year in pixels</button>
+        <button type="button" onClick={onNewEntry} className="nav-button-primary">New entry</button>
+        <button type="button" onClick={onSync} className="nav-button">Sync</button>
+        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">Lock</button>
       </div>
     </header>
   );
@@ -626,28 +580,19 @@ function TopBar({
 
 function SyncBadge({ state }: { state: SyncState }) {
   const labelByState: Record<SyncState, string> = {
-    locked: "Locked",
-    loading: "Loading",
-    ready: "Ready",
-    saving: "Saving",
-    saved: "Saved",
-    error: "Needs attention",
+    locked: "Locked", loading: "Loading", ready: "Ready", saving: "Saving", saved: "Saved", error: "Needs attention",
   };
-
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-300">
-      <span
-        className={cn(
-          "h-2 w-2 rounded-full",
-          state === "error" ? "bg-rose-400" : "bg-cyan-300",
-          state === "loading" || state === "saving" ? "animate-pulse" : "",
-        )}
-      />
+      <span className={cn("h-2 w-2 rounded-full", state === "error" ? "bg-rose-400" : "bg-cyan-300", state === "loading" || state === "saving" ? "animate-pulse" : "")} />
       {labelByState[state]}
     </span>
   );
 }
 
+/* ================================================================== */
+/*  HOME VIEW (Calendar + Sidebar)                                     */
+/* ================================================================== */
 function HomeView({
   entryByDate,
   selectedDate,
@@ -671,7 +616,6 @@ function HomeView({
   const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
   const yearLabel = visibleMonth.getFullYear();
 
-  // Dynamic tag compiler for current highlighted entry
   const entryTags = useMemo(() => {
     if (!selectedEntry) return [];
     return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
@@ -687,84 +631,39 @@ function HomeView({
               <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl">{monthLabel}</h1>
               <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
             </div>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Pick a day, write your entry, and the calendar marks it with the saved mood color.
-            </p>
+            <p className="max-w-2xl text-sm leading-6 text-slate-400">Pick a day, write your entry, and the calendar marks it with the saved mood color.</p>
           </div>
-
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))}
-              className="round-button"
-              aria-label="Previous month"
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))}
-              className="round-button"
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))}
-              className="round-button"
-              aria-label="Next month"
-            >
-              Next
-            </button>
+            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))} className="round-button" aria-label="Previous month">Prev</button>
+            <button type="button" onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))} className="round-button">Today</button>
+            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))} className="round-button" aria-label="Next month">Next</button>
           </div>
         </div>
-
-        <MonthlyCalendar
-          visibleMonth={visibleMonth}
-          selectedDate={selectedDate}
-          entryByDate={entryByDate}
-          onSelectDate={(dateKey) => {
-            onSelectDate(dateKey);
-            const date = keyToDate(dateKey);
-            if (date.getMonth() !== visibleMonth.getMonth() || date.getFullYear() !== visibleMonth.getFullYear()) {
-              onVisibleMonthChange(date);
-            }
-          }}
-          onOpenEntry={onOpenEntry}
-        />
+        <MonthlyCalendar visibleMonth={visibleMonth} selectedDate={selectedDate} entryByDate={entryByDate} onSelectDate={(dateKey) => { onSelectDate(dateKey); const date = keyToDate(dateKey); if (date.getMonth() !== visibleMonth.getMonth() || date.getFullYear() !== visibleMonth.getFullYear()) onVisibleMonthChange(date); }} onOpenEntry={onOpenEntry} />
       </div>
 
       <aside className="animate-float-in space-y-4">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Selected day</p>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight text-white">{formatDateLong(selectedDate)}</h2>
-
           {selectedEntry ? (
             <div className="mt-5 space-y-4">
               <div className="flex flex-wrap gap-2 items-center">
                 <MoodChip mood={selectedEntry.mood} />
-                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
-                  {detectSentimentLabel(selectedEntry.bodyHtml)}
-                </span>
+                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">{detectSentimentLabel(selectedEntry.bodyHtml)}</span>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
                 <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
               </div>
-              
               {entryTags.length > 0 && (
                 <div>
                   <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
                   <div className="flex flex-wrap gap-1">
-                    {entryTags.map(t => (
-                      <span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">
-                        {t.startsWith("#") ? t : `#${t}`}
-                      </span>
-                    ))}
+                    {entryTags.map((t) => (<span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">{t.startsWith("#") ? t : `#${t}`}</span>))}
                   </div>
                 </div>
               )}
-
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
                 <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
@@ -776,14 +675,9 @@ function HomeView({
               </div>
             </div>
           ) : (
-            <div className="mt-5 rounded-3xl border border-dashed border-white/15 bg-black/20 p-5 text-sm leading-6 text-slate-400">
-              No entry yet. Make this day visible in your calendar by saving a mood and a few lines.
-            </div>
+            <div className="mt-5 rounded-3xl border border-dashed border-white/15 bg-black/20 p-5 text-sm leading-6 text-slate-400">No entry yet. Make this day visible in your calendar by saving a mood and a few lines.</div>
           )}
-
-          <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">
-            {selectedEntry ? "Edit entry" : "Write entry"}
-          </button>
+          <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">{selectedEntry ? "Edit entry" : "Write entry"}</button>
         </section>
 
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
@@ -795,14 +689,15 @@ function HomeView({
             <p className="max-w-[10rem] text-right text-sm leading-6 text-slate-400">written day{monthEntries.length === 1 ? "" : "s"} saved to GitHub</p>
           </div>
         </section>
-
         <MoodLegend />
       </aside>
     </section>
   );
 }
 
-// ... rest of the unchanged code (MonthlyCalendar, SyncBadge, etc.) stays exactly intact ...
+/* ================================================================== */
+/*  MONTHLY CALENDAR                                                   */
+/* ================================================================== */
 function MonthlyCalendar({
   visibleMonth,
   selectedDate,
@@ -822,18 +717,14 @@ function MonthlyCalendar({
   return (
     <div className="mt-8">
       <div className="grid grid-cols-7 gap-2 px-1 text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 sm:gap-3">
-        {WEEKDAYS.map((day) => (
-          <span key={day}>{day}</span>
-        ))}
+        {WEEKDAYS.map((day) => (<span key={day}>{day}</span>))}
       </div>
-
       <div className="mt-3 grid grid-cols-7 gap-2 sm:gap-3">
         {cells.map((cell) => {
           const entry = entryByDate.get(cell.dateKey);
           const mood = entry ? MOOD_BY_ID[entry.mood] : null;
           const isSelected = cell.dateKey === selectedDate;
           const isToday = cell.dateKey === todayKey;
-
           return (
             <button
               key={cell.dateKey}
@@ -852,22 +743,8 @@ function MonthlyCalendar({
                 <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>{cell.day}</span>
                 {isToday ? <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" /> : null}
               </span>
-
-              {entry ? (
-                <span
-                  className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150"
-                  style={{ backgroundColor: mood?.color, boxShadow: `0 0 18px ${mood?.glow}` }}
-                />
-              ) : null}
-
-              {entry ? (
-                <span
-                  className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block"
-                  title={entry.title}
-                >
-                  {entry.title}
-                </span>
-              ) : null}
+              {entry ? (<span className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150" style={{ backgroundColor: mood?.color, boxShadow: `0 0 18px ${mood?.glow}` }} />) : null}
+              {entry ? (<span className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block" title={entry.title}>{entry.title}</span>) : null}
             </button>
           );
         })}
@@ -876,6 +753,9 @@ function MonthlyCalendar({
   );
 }
 
+/* ================================================================== */
+/*  ENTRY EDITOR (with auto-save)                                      */
+/* ================================================================== */
 function EntryEditor({
   dateKey,
   entry,
@@ -883,6 +763,7 @@ function EntryEditor({
   syncState,
   onBack,
   onSave,
+  onSaveInPlace,
   onDelete,
 }: {
   dateKey: string;
@@ -891,6 +772,7 @@ function EntryEditor({
   syncState: SyncState;
   onBack: () => void;
   onSave: (entry: DiaryEntry) => Promise<void>;
+  onSaveInPlace: (entry: DiaryEntry) => Promise<void>;
   onDelete: (dateKey: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState(entry?.title ?? "");
@@ -901,30 +783,82 @@ function EntryEditor({
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
-  
+
+  // Track whether anything changed since the last save
+  const lastSavedRef = useRef<string>("");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSavingRef = useRef(false);
+
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
 
-  const computedTags = useMemo(() => {
-    return extractTopicsAndTags(bodyHtml, title);
-  }, [bodyHtml, title]);
+  const computedTags = useMemo(() => extractTopicsAndTags(bodyHtml, title), [bodyHtml, title]);
 
-  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
+  /* ---- build a snapshot fingerprint ------------------------------ */
+  function buildSnapshot(): string {
+    return JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments: attachments.map((a) => a.id) });
+  }
+
+  /* ---- auto-save effect ----------------------------------------- */
+  useEffect(() => {
+    const snapshot = buildSnapshot();
+    // Only schedule auto-save if content actually changed
+    if (snapshot === lastSavedRef.current) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+
+    autoSaveTimerRef.current = setTimeout(async () => {
+      if (isSavingRef.current) return;
+      isSavingRef.current = true;
+      try {
+        const now = new Date().toISOString();
+        const nextEntry: DiaryEntry = {
+          id: entry?.id ?? createId(),
+          date: dateKey,
+          title: title.trim() || "Untitled entry",
+          mood,
+          bodyHtml: sanitizeHtml(bodyHtml).trim(),
+          dailyWin: dailyWin.trim(),
+          attachments,
+          createdAt: entry?.createdAt ?? now,
+          updatedAt: now,
+        };
+        await onSaveInPlace(nextEntry);
+        lastSavedRef.current = buildSnapshot();
+      } catch {
+        // silently ignore auto-save errors – user can manually save
+      } finally {
+        isSavingRef.current = false;
+      }
+    }, AUTO_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [title, mood, bodyHtml, dailyWin, attachments]);
+
+  /* ---- initialise the snapshot so we don't save on first render -- */
+  useEffect(() => {
+    lastSavedRef.current = buildSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ---- AI prompt generator -------------------------------------- */
   async function triggerAIPrompt() {
     setAIPrompt("Consulting your timeline memory...");
     try {
       const allEntries = Array.from(entryByDate.values());
       const customQuestion = await generateAICustomQuestion(allEntries);
       setAIPrompt(customQuestion);
-    } catch (err) {
+    } catch {
       setAIPrompt("What's on your mind today? Tell me how your day went.");
     }
   }
 
+  /* ---- full manual save (navigates home) ------------------------ */
   async function handleSave() {
     setLocalError("");
     setIsWorking(true);
-
     try {
       const now = new Date().toISOString();
       const nextEntry: DiaryEntry = {
@@ -938,8 +872,8 @@ function EntryEditor({
         createdAt: entry?.createdAt ?? now,
         updatedAt: now,
       };
-
       await onSave(nextEntry);
+      lastSavedRef.current = buildSnapshot();
     } catch (error) {
       setLocalError(getErrorMessage(error));
     } finally {
@@ -951,7 +885,6 @@ function EntryEditor({
     if (!entry) return;
     const confirmed = window.confirm("Delete this diary entry from the GitHub vault file?");
     if (!confirmed) return;
-
     setLocalError("");
     setIsWorking(true);
     try {
@@ -967,22 +900,14 @@ function EntryEditor({
     <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <button type="button" onClick={onBack} className="round-button w-fit">
-            Back to calendar
-          </button>
+          <button type="button" onClick={onBack} className="round-button w-fit">Back to calendar</button>
           <div className="flex items-center gap-2">
-            {entry ? (
-              <button type="button" onClick={handleDelete} disabled={isSaving} className="danger-button">
-                Delete
-              </button>
-            ) : null}
-            <button type="button" onClick={handleSave} disabled={isSaving} className="nav-button-primary py-3">
-              {isSaving ? "Saving..." : "Save entry"}
-            </button>
+            {entry ? (<button type="button" onClick={handleDelete} disabled={isSaving} className="danger-button">Delete</button>) : null}
+            <button type="button" onClick={handleSave} disabled={isSaving} className="nav-button-primary py-3">{isSaving ? "Saving..." : "Save entry"}</button>
           </div>
         </div>
 
-        {/* AI Prompt Journaling Assistant Panel widget */}
+        {/* AI Prompt Assistant */}
         <div className="mt-6 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
           <div className="flex items-center justify-between gap-4">
@@ -990,18 +915,10 @@ function EntryEditor({
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
               <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
             </div>
-            <button 
-              type="button" 
-              onClick={triggerAIPrompt} 
-              className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
-            >
-              Generate Prompt
-            </button>
+            <button type="button" onClick={triggerAIPrompt} className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0">Generate Prompt</button>
           </div>
           {aiPrompt && (
-            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">
-              "{aiPrompt}"
-            </div>
+            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">"{aiPrompt}"</div>
           )}
         </div>
 
@@ -1009,35 +926,22 @@ function EntryEditor({
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
             <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
-            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
-              AI Assessment: {detectSentimentLabel(bodyHtml)}
-            </span>
+            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">AI Assessment: {detectSentimentLabel(bodyHtml)}</span>
           </div>
 
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Give today a title"
-            className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl"
-          />
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Give today a title" className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl" />
 
           <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
 
-          {/* Extracted Topic clouds list display area */}
           {computedTags.length > 0 && (
             <div className="pt-2">
               <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
               <div className="flex flex-wrap gap-1.5">
-                {computedTags.map(tag => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
-                    #{tag}
-                  </span>
-                ))}
+                {computedTags.map((tag) => (<span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">#{tag}</span>))}
               </div>
             </div>
           )}
         </div>
-
         {localError ? <SyncError message={localError} compact /> : null}
       </div>
 
@@ -1047,15 +951,7 @@ function EntryEditor({
           <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
           <div className="mt-5 grid gap-2">
             {MOODS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setMood(item.id)}
-                className={cn(
-                  "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
-                  item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
-                )}
-              >
+              <button key={item.id} type="button" onClick={() => setMood(item.id)} className={cn("group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300", item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]")}>
                 <span className="h-4 w-4 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium text-white">{item.label}</span>
@@ -1068,13 +964,7 @@ function EntryEditor({
 
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
-          <textarea
-            value={dailyWin}
-            onChange={(event) => setDailyWin(event.target.value)}
-            placeholder="One small productive thing, lesson, or gain from today..."
-            rows={5}
-            className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35"
-          />
+          <textarea value={dailyWin} onChange={(event) => setDailyWin(event.target.value)} placeholder="One small productive thing, lesson, or gain from today..." rows={5} className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35" />
         </section>
 
         <AttachmentPanel attachments={attachments} onChange={setAttachments} />
@@ -1083,6 +973,9 @@ function EntryEditor({
   );
 }
 
+/* ================================================================== */
+/*  RICH TEXT EDITOR                                                   */
+/* ================================================================== */
 function RichTextEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const [isFocused, setIsFocused] = useState(false);
@@ -1122,59 +1015,29 @@ function RichTextEditor({ value, onChange }: { value: string; onChange: (value: 
       </div>
 
       <div className="relative">
-        {!htmlToText(value) && !isFocused ? (
-          <div className="pointer-events-none absolute left-5 top-5 text-slate-600">Start writing what happened today...</div>
-        ) : null}
-        <div
-          ref={editorRef}
-          contentEditable
-          suppressContentEditableWarning
-          onInput={() => onChange(editorRef.current?.innerHTML ?? "")}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          className="diary-prose min-h-[24rem] px-5 py-5 text-base leading-8 text-slate-200 outline-none sm:min-h-[30rem]"
-        />
+        {!htmlToText(value) && !isFocused ? (<div className="pointer-events-none absolute left-5 top-5 text-slate-600">Start writing what happened today...</div>) : null}
+        <div ref={editorRef} contentEditable suppressContentEditableWarning onInput={() => onChange(editorRef.current?.innerHTML ?? "")} onFocus={() => setIsFocused(true)} onBlur={() => setIsFocused(false)} className="diary-prose min-h-[24rem] px-5 py-5 text-base leading-8 text-slate-200 outline-none sm:min-h-[30rem]" />
       </div>
     </div>
   );
 }
 
-function ToolbarButton({
-  label,
-  onClick,
-  strong,
-  italic,
-  underline,
-}: {
-  label: string;
-  onClick: () => void;
-  strong?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-}) {
+function ToolbarButton({ label, onClick, strong, italic, underline }: { label: string; onClick: () => void; strong?: boolean; italic?: boolean; underline?: boolean }) {
   return (
-    <button
-      type="button"
-      onMouseDown={(event) => {
-        event.preventDefault();
-        onClick();
-      }}
-      className={cn(
-        "rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-200/40 hover:bg-cyan-200/10 hover:text-white",
-        strong ? "font-black" : "",
-        italic ? "italic" : "",
-        underline ? "underline" : "",
-      )}
-    >
+    <button type="button" onMouseDown={(event) => { event.preventDefault(); onClick(); }} className={cn("rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-200/40 hover:bg-cyan-200/10 hover:text-white", strong ? "font-black" : "", italic ? "italic" : "", underline ? "underline" : "")}>
       {label}
     </button>
   );
 }
 
+/* ================================================================== */
+/*  ATTACHMENT PANEL – 500 MB per-file limit                           */
+/* ================================================================== */
 function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
   const totalBytes = totalAttachmentBytes(attachments);
+  const MAX_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
@@ -1199,18 +1062,16 @@ function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[];
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
           <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos. They are encrypted inside the GitHub vault file.</p>
         </div>
-        <button type="button" onClick={() => inputRef.current?.click()} className="round-button shrink-0">
-          Add
-        </button>
+        <button type="button" onClick={() => inputRef.current?.click()} className="round-button shrink-0">Add</button>
       </div>
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
         {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
       </div>
 
-      {totalBytes > 20 * 1024 * 1024 ? (
+      {totalBytes > MAX_TOTAL_BYTES ? (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          Large media can make GitHub saves slower. Compress videos if commits begin to fail.
+          Total attachments exceed 500 MB. Large media can make GitHub saves slower. Compress videos if commits begin to fail.
         </p>
       ) : null}
 
@@ -1231,13 +1092,7 @@ function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[];
                 <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
                 <p className="text-xs text-slate-500">{formatBytes(attachment.size)}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))}
-                className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
-              >
-                Remove
-              </button>
+              <button type="button" onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))} className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100">Remove</button>
             </div>
           </div>
         ))}
@@ -1246,6 +1101,9 @@ function AttachmentPanel({ attachments, onChange }: { attachments: Attachment[];
   );
 }
 
+/* ================================================================== */
+/*  YEAR IN PIXELS VIEW                                                */
+/* ================================================================== */
 function YearPixelsView({
   year,
   entryByDate,
@@ -1269,27 +1127,15 @@ function YearPixelsView({
           <div className="space-y-3">
             <p className="text-sm uppercase tracking-[0.5em] text-fuchsia-200/50">Year in pixels</p>
             <h1 className="text-6xl font-semibold tracking-[-0.08em] text-white sm:text-8xl">{year}</h1>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.
-            </p>
+            <p className="max-w-2xl text-sm leading-6 text-slate-400">Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.</p>
           </div>
-
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={onBack} className="round-button">
-              Back
-            </button>
-            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">
-              Prev year
-            </button>
-            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">
-              This year
-            </button>
-            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">
-              Next year
-            </button>
+            <button type="button" onClick={onBack} className="round-button">Back</button>
+            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">Prev year</button>
+            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">This year</button>
+            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">Next year</button>
           </div>
         </div>
-
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-slate-400">
           <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">{writtenDays} written day{writtenDays === 1 ? "" : "s"}</span>
           <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">Click any pixel to open that date</span>
@@ -1297,28 +1143,16 @@ function YearPixelsView({
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {months.map((monthDate) => (
-          <MonthPixelPanel key={monthDate.toISOString()} monthDate={monthDate} entryByDate={entryByDate} onOpenEntry={onOpenEntry} />
-        ))}
+        {months.map((monthDate) => (<MonthPixelPanel key={monthDate.toISOString()} monthDate={monthDate} entryByDate={entryByDate} onOpenEntry={onOpenEntry} />))}
       </div>
-
       <MoodLegend />
     </section>
   );
 }
 
-function MonthPixelPanel({
-  monthDate,
-  entryByDate,
-  onOpenEntry,
-}: {
-  monthDate: Date;
-  entryByDate: Map<string, DiaryEntry>;
-  onOpenEntry: (dateKey: string) => void;
-}) {
+function MonthPixelPanel({ monthDate, entryByDate, onOpenEntry }: { monthDate: Date; entryByDate: Map<string, DiaryEntry>; onOpenEntry: (dateKey: string) => void }) {
   const monthName = new Intl.DateTimeFormat("en", { month: "long" }).format(monthDate);
   const cells = buildMonthCells(monthDate);
-
   return (
     <section className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-4 backdrop-blur-2xl transition duration-300 hover:bg-white/[0.055]">
       <div className="mb-3 flex items-center justify-between">
@@ -1330,19 +1164,9 @@ function MonthPixelPanel({
           const entry = entryByDate.get(cell.dateKey);
           const mood = entry ? MOOD_BY_ID[entry.mood] : null;
           return (
-            <button
-              key={cell.dateKey}
-              type="button"
-              onClick={() => onOpenEntry(cell.dateKey)}
-              title={`${formatDateLong(cell.dateKey)}${entry ? ` - ${entry.title}` : ""}`}
-              className={cn(
-                "aspect-square rounded-full transition duration-300 hover:scale-150 hover:ring-2 hover:ring-cyan-100/60",
-                cell.inCurrentMonth ? "opacity-100" : "opacity-20",
-              )}
-              style={{
-                backgroundColor: mood?.color ?? "rgba(148, 163, 184, 0.2)",
-                boxShadow: mood ? `0 0 16px ${mood.glow}` : "none",
-              }}
+            <button key={cell.dateKey} type="button" onClick={() => onOpenEntry(cell.dateKey)} title={`${formatDateLong(cell.dateKey)}${entry ? ` - ${entry.title}` : ""}`}
+              className={cn("aspect-square rounded-full transition duration-300 hover:scale-150 hover:ring-2 hover:ring-cyan-100/60", cell.inCurrentMonth ? "opacity-100" : "opacity-20")}
+              style={{ backgroundColor: mood?.color ?? "rgba(148, 163, 184, 0.2)", boxShadow: mood ? `0 0 16px ${mood.glow}` : "none" }}
             />
           );
         })}
@@ -1351,9 +1175,9 @@ function MonthPixelPanel({
   );
 }
 
-/* ==========================================================================
-   FIXED STEP 4 WORKSPACE VIEW: INTEGRATING SECURE COGNITIVE TIMELINE SEARCH
-   ========================================================================== */
+/* ================================================================== */
+/*  AI INTELLIGENCE VIEW – with clickable dates                        */
+/* ================================================================== */
 function AIIntelligenceView({
   entries,
   initialTagFilter,
@@ -1365,8 +1189,6 @@ function AIIntelligenceView({
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
-  
-  // NEW STATES: Capture deep timeline reasoning returns safely without storing static tokens
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
 
@@ -1374,28 +1196,19 @@ function AIIntelligenceView({
     const frequencyMap: Record<string, number> = {};
     entries.forEach((item) => {
       const extracted = extractTopicsAndTags(item.bodyHtml, item.title);
-      extracted.forEach((t) => {
-        frequencyMap[t] = (frequencyMap[t] || 0) + 1;
-      });
+      extracted.forEach((t) => { frequencyMap[t] = (frequencyMap[t] || 0) + 1; });
     });
-    return Object.entries(frequencyMap)
-      .map(([text, count]) => ({ text, count }))
-      .sort((a, b) => b.count - a.count);
+    return Object.entries(frequencyMap).map(([text, count]) => ({ text, count })).sort((a, b) => b.count - a.count);
   }, [entries]);
 
   const expandedTerms = useMemo(() => {
     const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (queries.length === 0) return [];
-    
     const terms = [...queries];
-    queries.forEach(q => {
-      if (SEMANTIC_DICTIONARY[q]) {
-        terms.push(...SEMANTIC_DICTIONARY[q]);
-      }
+    queries.forEach((q) => {
+      if (SEMANTIC_DICTIONARY[q]) terms.push(...SEMANTIC_DICTIONARY[q]);
       Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
-        if (synonyms.includes(q) && !terms.includes(key)) {
-          terms.push(key);
-        }
+        if (synonyms.includes(q) && !terms.includes(key)) terms.push(key);
       });
     });
     return Array.from(new Set(terms));
@@ -1406,19 +1219,12 @@ function AIIntelligenceView({
       const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
       const titleClean = item.title.toLowerCase();
       const dateString = item.date;
-
       if (activeTag) {
         const itemTags = extractTopicsAndTags(item.bodyHtml, item.title);
         if (!itemTags.includes(activeTag)) return false;
       }
-
       if (expandedTerms.length > 0) {
-        return expandedTerms.some(
-          (term) =>
-            bodyClean.includes(term) ||
-            titleClean.includes(term) ||
-            dateString.includes(term)
-        );
+        return expandedTerms.some((term) => bodyClean.includes(term) || titleClean.includes(term) || dateString.includes(term));
       }
       return true;
     }).sort((a, b) => b.date.localeCompare(a.date));
@@ -1426,25 +1232,21 @@ function AIIntelligenceView({
 
   const emotionalDistribution = useMemo(() => {
     const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0 };
-    entries.forEach((e) => {
-      if (tallies[e.mood] !== undefined) tallies[e.mood]++;
-    });
+    entries.forEach((e) => { if (tallies[e.mood] !== undefined) tallies[e.mood]++; });
     return tallies;
   }, [entries]);
 
   const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
 
-  // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
   async function handleAISubmit(e: FormEvent) {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-
     setIsSearchingAI(true);
     setAiAnswer("Thinking through your timeline memory...");
     try {
       const response = await smartAISearch(searchQuery, entries);
       setAiAnswer(response);
-    } catch (err) {
+    } catch {
       setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
     } finally {
       setIsSearchingAI(false);
@@ -1454,70 +1256,46 @@ function AIIntelligenceView({
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
-        
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
-          <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively.
-          </p>
+          <p className="text-sm text-slate-400 max-w-2xl">Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively.</p>
         </div>
 
-        {/* Input box form element overlay wrapper */}
         <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
           <span className="text-xl text-slate-500">🔍</span>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
-          />
-          {searchQuery && (
-            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">
-              Clear
-            </button>
-          )}
-          <button
-            type="submit"
-            disabled={isSearchingAI || !searchQuery.trim()}
-            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40"
-          >
+          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...' className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2" />
+          {searchQuery && (<button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">Clear</button>)}
+          <button type="submit" disabled={isSearchingAI || !searchQuery.trim()} className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40">
             {isSearchingAI ? "Thinking..." : "Ask AI Brain"}
           </button>
         </form>
 
-        {/* Dynamic expansion status indicators */}
         {expandedTerms.length > 0 && (
           <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
             <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
-            {expandedTerms.map((t) => (
-              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
-                {t}
-              </span>
-            ))}
+            {expandedTerms.map((t) => (<span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">{t}</span>))}
           </div>
         )}
 
-        {/* Selected tag constraint badge overlay */}
         {activeTag && (
           <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
             <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
-            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
-              Remove Filter
-            </button>
+            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">Remove Filter</button>
           </div>
         )}
 
-        {/* REASONED AI RESPONSE BLOCK: Renders summary card directly inside existing UI */}
+        {/* ---- AI answer with CLICKABLE dates --------------------- */}
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">AI Cognitive Brain Conclusion</h4>
-            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">{aiAnswer}</p>
+            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+              <AIResponseRenderer text={aiAnswer} onDateClick={onJumpToEntry} />
+            </p>
           </div>
         )}
 
-        {/* Filter Output List Area */}
+        {/* Filtered entries list */}
         <div className="space-y-3">
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
             <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
@@ -1529,30 +1307,16 @@ function AIIntelligenceView({
               {filteredEntries.map((item) => {
                 const option = MOOD_BY_ID[item.mood];
                 return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onJumpToEntry(item.date)}
-                    className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group"
-                  >
+                  <button key={item.id} type="button" onClick={() => onJumpToEntry(item.date)} className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group">
                     <div className="min-w-0 space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">
-                          {item.date}
-                        </span>
-                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">
-                          {item.title}
-                        </h4>
+                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">{item.date}</span>
+                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">{item.title}</h4>
                       </div>
-                      <p className="text-xs text-slate-400 truncate max-w-xl">
-                        {htmlToText(item.bodyHtml)}
-                      </p>
+                      <p className="text-xs text-slate-400 truncate max-w-xl">{htmlToText(item.bodyHtml)}</p>
                     </div>
-                    
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-slate-500 hidden sm:inline">
-                        {detectSentimentLabel(item.bodyHtml)}
-                      </span>
+                      <span className="text-xs text-slate-500 hidden sm:inline">{detectSentimentLabel(item.bodyHtml)}</span>
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
                     </div>
                   </button>
@@ -1560,9 +1324,7 @@ function AIIntelligenceView({
               })}
             </div>
           ) : (
-            <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
-              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
-            </div>
+            <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.</div>
           )}
         </div>
       </div>
@@ -1573,7 +1335,6 @@ function AIIntelligenceView({
             <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
             <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated textual weight scores.</p>
           </div>
-
           <div className="space-y-3 pt-2">
             {MOODS.map((m) => {
               const count = emotionalDistribution[m.id] || 0;
@@ -1581,21 +1342,11 @@ function AIIntelligenceView({
               return (
                 <div key={m.id} className="space-y-1">
                   <div className="flex justify-between items-center text-xs">
-                    <span className="text-white font-medium flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
-                      {m.label}
-                    </span>
-                    <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
+                    <span className="text-white font-medium flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />{m.label}</span>
+                    <span className="text-slate-500">{count} {count === 1 ? "entry" : "entries"}</span>
                   </div>
                   <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${normalizedPct}%`,
-                        backgroundColor: m.color,
-                        boxShadow: `0 0 10px ${m.glow}`,
-                      }}
-                    />
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${normalizedPct}%`, backgroundColor: m.color, boxShadow: `0 0 10px ${m.glow}` }} />
                   </div>
                 </div>
               );
@@ -1608,21 +1359,11 @@ function AIIntelligenceView({
             <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
             <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
           </div>
-
           {globalTopicCloud.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 pt-2">
               {globalTopicCloud.map((tag) => (
-                <button
-                  key={tag.text}
-                  type="button"
-                  onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
-                    activeTag === tag.text
-                      ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
-                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
-                  )}
-                >
+                <button key={tag.text} type="button" onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
+                  className={cn("text-xs px-2.5 py-1 rounded-xl border transition duration-150", activeTag === tag.text ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow" : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5")}>
                   #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
                 </button>
               ))}
@@ -1631,13 +1372,15 @@ function AIIntelligenceView({
             <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
           )}
         </section>
-
         <MoodLegend />
       </aside>
     </div>
   );
 }
 
+/* ================================================================== */
+/*  SHARED COMPONENTS                                                  */
+/* ================================================================== */
 function MoodLegend() {
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
@@ -1676,12 +1419,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function SyncError({ message, compact }: { message: string; compact?: boolean }) {
   return (
-    <div
-      className={cn(
-        "rounded-2xl border border-rose-300/20 bg-rose-500/10 text-sm leading-6 text-rose-100 shadow-2xl shadow-rose-950/20 backdrop-blur-xl",
-        compact ? "mt-4 px-4 py-3" : "mb-5 px-5 py-4",
-      )}
-    >
+    <div className={cn("rounded-2xl border border-rose-300/20 bg-rose-500/10 text-sm leading-6 text-rose-100 shadow-2xl shadow-rose-950/20 backdrop-blur-xl", compact ? "mt-4 px-4 py-3" : "mb-5 px-5 py-4")}>
       {message}
     </div>
   );
@@ -1699,15 +1437,13 @@ function AmbientBackdrop() {
   );
 }
 
+/* ================================================================== */
+/*  UTILITY FUNCTIONS                                                  */
+/* ================================================================== */
 function createEmptyVault(): VaultData {
-  return {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    entries: [],
-  };
+  return { version: 1, updatedAt: new Date().toISOString(), entries: [] };
 }
 
-// ... unchanged core KDF helper configurations ...
 function loadStoredConfig(): GitHubConfig | null {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -1728,6 +1464,7 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
   };
 }
 
+/* ---- encryption ------------------------------------------------- */
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -1737,17 +1474,9 @@ async function encryptVault(vault: VaultData, passphrase: string): Promise<strin
   const file: EncryptedVaultFile = {
     kind: "moonlit-diary-encrypted-vault",
     version: 1,
-    crypto: {
-      name: "AES-GCM",
-      kdf: "PBKDF2",
-      hash: "SHA-256",
-      iterations: PBKDF2_ITERATIONS,
-      salt: bytesToBase64(salt),
-      iv: bytesToBase64(iv),
-    },
+    crypto: { name: "AES-GCM", kdf: "PBKDF2", hash: "SHA-256", iterations: PBKDF2_ITERATIONS, salt: bytesToBase64(salt), iv: bytesToBase64(iv) },
     payload: bytesToBase64(new Uint8Array(encrypted)),
   };
-
   return JSON.stringify(file, null, 2);
 }
 
@@ -1757,7 +1486,6 @@ async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: s
     const iv = base64ToBytes(file.crypto.iv);
     const encrypted = base64ToBytes(file.payload);
     const key = await deriveVaultKey(passphrase, salt, file.crypto.iterations);
-
     try {
       const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
       return normalizeVault(JSON.parse(new TextDecoder().decode(decrypted)) as VaultData);
@@ -1765,7 +1493,6 @@ async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: s
       throw new Error("Could not unlock the vault. Check your passphrase.");
     }
   }
-
   return normalizeVault(file);
 }
 
@@ -1774,80 +1501,34 @@ function isEncryptedVaultFile(file: EncryptedVaultFile | VaultData): file is Enc
 }
 
 function normalizeVault(vault: VaultData): VaultData {
-  return {
-    version: 1,
-    updatedAt: vault.updatedAt || new Date().toISOString(),
-    entries: Array.isArray(vault.entries) ? vault.entries : [],
-  };
+  return { version: 1, updatedAt: vault.updatedAt || new Date().toISOString(), entries: Array.isArray(vault.entries) ? vault.entries : [] };
 }
 
 async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: number) {
   const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
-  const saltBuffer = new Uint8Array(salt).buffer as ArrayBuffer;
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: saltBuffer, iterations, hash: "SHA-256" },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: new Uint8Array(salt).buffer as ArrayBuffer, iterations, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
+/* ---- GitHub API ------------------------------------------------- */
 async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
-  const response = await fetch(gitHubContentUrl(config), {
-    headers: githubHeaders(config),
-  });
-
-  if (response.status === 404) {
-    return { exists: false, sha: null, text: "" };
-  }
-
-  if (!response.ok) {
-    throw new Error(await githubErrorMessage(response));
-  }
-
+  const response = await fetch(gitHubContentUrl(config), { headers: githubHeaders(config) });
+  if (response.status === 404) return { exists: false, sha: null, text: "" };
+  if (!response.ok) throw new Error(await githubErrorMessage(response));
   const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
-  if (data.content && data.encoding === "base64") {
-    return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
-  }
-
+  if (data.content && data.encoding === "base64") return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   if (data.download_url) {
     const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
-    if (!rawResponse.ok) {
-      throw new Error(await githubErrorMessage(rawResponse));
-    }
+    if (!rawResponse.ok) throw new Error(await githubErrorMessage(rawResponse));
     return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
   }
-
   return { exists: true, sha: data.sha ?? null, text: "" };
 }
 
-async function putGitHubVaultFile(
-  config: GitHubConfig,
-  text: string,
-  sha: string | null,
-  message: string,
-): Promise<{ sha: string | null }> {
-  const body: { message: string; content: string; branch: string; sha?: string } = {
-    message,
-    content: stringToBase64(text),
-    branch: config.branch,
-  };
-
-  if (sha) {
-    body.sha = sha;
-  }
-
-  const response = await fetch(gitHubContentUrl(config), {
-    method: "PUT",
-    headers: githubHeaders(config),
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(await githubErrorMessage(response));
-  }
-
+async function putGitHubVaultFile(config: GitHubConfig, text: string, sha: string | null, message: string): Promise<{ sha: string | null }> {
+  const body: { message: string; content: string; branch: string; sha?: string } = { message, content: stringToBase64(text), branch: config.branch };
+  if (sha) body.sha = sha;
+  const response = await fetch(gitHubContentUrl(config), { method: "PUT", headers: githubHeaders(config), body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(await githubErrorMessage(response));
   const data = (await response.json()) as { content?: { sha?: string } };
   return { sha: data.content?.sha ?? null };
 }
@@ -1858,12 +1539,7 @@ function gitHubContentUrl(config: GitHubConfig) {
 }
 
 function githubHeaders(config: GitHubConfig): HeadersInit {
-  return {
-    Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${config.token}`,
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
+  return { Accept: "application/vnd.github+json", Authorization: `Bearer ${config.token}`, "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28" };
 }
 
 async function githubErrorMessage(response: Response) {
@@ -1875,20 +1551,15 @@ async function githubErrorMessage(response: Response) {
   }
 }
 
-function stringToBase64(value: string) {
-  return bytesToBase64(new TextEncoder().encode(value));
-}
-
-function base64ToString(value: string) {
-  return new TextDecoder().decode(base64ToBytes(value));
-}
+/* ---- base64 helpers --------------------------------------------- */
+function stringToBase64(value: string) { return bytesToBase64(new TextEncoder().encode(value)); }
+function base64ToString(value: string) { return new TextDecoder().decode(base64ToBytes(value)); }
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return btoa(binary);
 }
@@ -1896,12 +1567,11 @@ function bytesToBase64(bytes: Uint8Array) {
 function base64ToBytes(value: string) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
 }
 
+/* ---- date helpers ----------------------------------------------- */
 function dateToKey(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -1914,43 +1584,6 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
-function extractTopicsAndTags(html: string, title: string): string[] {
-  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
-  const foundTags = new Set<string>();
-
-  const hashMatches = combinedText.match(/#\w+/g);
-  if (hashMatches) {
-    hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
-  }
-
-  if (combinedText.includes("alex")) foundTags.add("alex");
-  if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
-  if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
-  if (combinedText.includes("gym") || combinedText.includes("workout") || combinedText.includes("run")) foundTags.add("fitness");
-  if (combinedText.includes("coding") || combinedText.includes("code") || combinedText.includes("app")) foundTags.add("dev");
-  if (combinedText.includes("family") || combinedText.includes("home") || combinedText.includes("parents")) foundTags.add("family");
-
-  return Array.from(foundTags);
-}
-
-function detectSentimentLabel(html: string): string {
-  const plainText = htmlToText(html).toLowerCase();
-  if (!plainText || plainText.length < 5) return "Neutral Focus";
-
-  let positiveScore = 0;
-  let heavyScore = 0;
-
-  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
-  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
-
-  positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
-  heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
-
-  if (positiveScore > heavyScore) return "Energetic & Bright";
-  if (heavyScore > positiveScore) return "Reflective & Introspective";
-  return "Balanced Reflection";
-}
-
 function addMonths(date: Date, amount: number) {
   return new Date(date.getFullYear(), date.getMonth() + amount, 1);
 }
@@ -1959,50 +1592,35 @@ function formatDateLong(key: string) {
   return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(keyToDate(key));
 }
 
-// ... unchanged math matrices/string sanitizers ...
 function buildMonthCells(monthDate: Date) {
   const year = monthDate.getFullYear();
   const month = monthDate.getMonth();
   const firstDay = new Date(year, month, 1);
   const gridStart = new Date(year, month, 1 - firstDay.getDay());
-
   return Array.from({ length: 42 }, (_, index) => {
     const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
-    return {
-      date,
-      dateKey: dateToKey(date),
-      day: date.getDate(),
-      inCurrentMonth: date.getMonth() === month,
-    };
+    return { date, dateKey: dateToKey(date), day: date.getDate(), inCurrentMonth: date.getMonth() === month };
   });
 }
 
+/* ---- misc ------------------------------------------------------- */
 function createId() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function htmlToText(html: string) {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function sanitizeHtml(html: string) {
   const template = document.createElement("template");
   template.innerHTML = html;
   template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
-
   const allowedTags = new Set(["A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "H1", "H2", "H3", "I", "LI", "OL", "P", "SPAN", "STRONG", "U", "UL"]);
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
   const elements: Element[] = [];
-  while (walker.nextNode()) {
-    elements.push(walker.currentNode as Element);
-  }
+  while (walker.nextNode()) elements.push(walker.currentNode as Element);
 
   elements.forEach((element) => {
     if (!allowedTags.has(element.tagName)) {
@@ -2011,26 +1629,47 @@ function sanitizeHtml(html: string) {
       element.replaceWith(...Array.from(wrapper.childNodes));
       return;
     }
-
     Array.from(element.attributes).forEach((attribute) => {
       const name = attribute.name.toLowerCase();
       const isSafeLinkAttribute = element.tagName === "A" && ["href", "target", "rel"].includes(name);
-      if (name.startsWith("on") || name === "style" || !isSafeLinkAttribute) {
-        element.removeAttribute(attribute.name);
-      }
+      if (name.startsWith("on") || name === "style" || !isSafeLinkAttribute) element.removeAttribute(attribute.name);
     });
-
     if (element.tagName === "A") {
       const href = element.getAttribute("href") ?? "";
-      if (href && !/^(https?:|mailto:|tel:|#)/i.test(href)) {
-        element.removeAttribute("href");
-      }
+      if (href && !/^(https?:|mailto:|tel:|#)/i.test(href)) element.removeAttribute("href");
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noreferrer");
     }
   });
-
   return template.innerHTML;
+}
+
+function extractTopicsAndTags(html: string, title: string): string[] {
+  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
+  const foundTags = new Set<string>();
+  const hashMatches = combinedText.match(/#\w+/g);
+  if (hashMatches) hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
+  if (combinedText.includes("alex")) foundTags.add("alex");
+  if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
+  if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
+  if (combinedText.includes("gym") || combinedText.includes("workout") || combinedText.includes("run")) foundTags.add("fitness");
+  if (combinedText.includes("coding") || combinedText.includes("code") || combinedText.includes("app")) foundTags.add("dev");
+  if (combinedText.includes("family") || combinedText.includes("home") || combinedText.includes("parents")) foundTags.add("family");
+  return Array.from(foundTags);
+}
+
+function detectSentimentLabel(html: string): string {
+  const plainText = htmlToText(html).toLowerCase();
+  if (!plainText || plainText.length < 5) return "Neutral Focus";
+  let positiveScore = 0;
+  let heavyScore = 0;
+  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
+  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
+  positiveWords.forEach((w) => { if (plainText.includes(w)) positiveScore++; });
+  heavyWords.forEach((w) => { if (plainText.includes(w)) heavyScore++; });
+  if (positiveScore > heavyScore) return "Energetic & Bright";
+  if (heavyScore > positiveScore) return "Reflective & Introspective";
+  return "Balanced Reflection";
 }
 
 function totalAttachmentBytes(attachments: Attachment[]) {
@@ -2052,14 +1691,7 @@ function filesToAttachments(files: FileList) {
         new Promise<Attachment>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
-            resolve({
-              id: createId(),
-              name: file.name,
-              type: file.type || "application/octet-stream",
-              size: file.size,
-              dataUrl: String(reader.result),
-              addedAt: new Date().toISOString(),
-            });
+            resolve({ id: createId(), name: file.name, type: file.type || "application/octet-stream", size: file.size, dataUrl: String(reader.result), addedAt: new Date().toISOString() });
           };
           reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
           reader.readAsDataURL(file);

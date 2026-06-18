@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { cn } from "./utils/cn";
-// Import the multi-device cloud intelligence layer
 import { smartAISearch, generateAICustomQuestion } from "./aiService";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic";
@@ -15,13 +14,26 @@ type MoodOption = {
   description: string;
 };
 
+// Attachment can be either:
+// - Inline: has dataUrl, no remotePath (legacy or new uncommitted attachments)
+// - Remote: has remotePath, dataUrl is lazy-loaded on view
+type AttachmentChunk = {
+  path: string;
+  sha?: string;
+};
+
 type Attachment = {
   id: string;
   name: string;
   type: string;
   size: number;
-  dataUrl: string;
   addedAt: string;
+  dataUrl?: string;       // present when in-memory (new upload or lazy-loaded)
+  // New chunked storage (for large files):
+  chunks?: AttachmentChunk[];  // multi-file split storage on GitHub
+  // Legacy single-file storage (backwards compatible):
+  remotePath?: string;    // path inside GitHub repo if stored as single file (legacy)
+  remoteSha?: string;     // GitHub blob SHA of remote file (legacy)
 };
 
 type DiaryEntry = {
@@ -50,8 +62,8 @@ type GitHubConfig = {
   token: string;
 };
 
-type EncryptedVaultFile = {
-  kind: "moonlit-diary-encrypted-vault";
+type EncryptedFile = {
+  kind: "moonlit-diary-encrypted-vault" | "moonlit-diary-encrypted-attachment";
   version: 1;
   crypto: {
     name: "AES-GCM";
@@ -85,7 +97,11 @@ const DEFAULT_CONFIG: GitHubConfig = {
   path: "data/moonlit-diary-vault.json",
   token: "",
 };
-const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB limit
+const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB per file
+const ATTACHMENTS_SUBDIR = "moonlit-attachments"; // sibling to vault file
+// Chunk size for the dataURL STRING. We aim for a final GitHub blob <100MB.
+// dataURL chunk → encrypted JSON ~1.35x → base64-for-blob ~1.35x. So 15MB string → ~27MB blob. Very safe.
+const CHUNK_SIZE_BYTES = 15 * 1024 * 1024;
 
 const MOODS: MoodOption[] = [
   { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
@@ -111,96 +127,59 @@ const SEMANTIC_DICTIONARY: Record<string, string[]> = {
   stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
 };
 
+// ============================================================================
+// AI Response Renderer with Clickable Dates
+// ============================================================================
+
+function parseReadableDateToISO(readableDate: string): string | null {
+  const clean = readableDate.toLowerCase().trim();
+  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
+  if (!match) {
+    const simpleMatch = clean.match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/);
+    if (!simpleMatch) return null;
+    return buildIso(simpleMatch[1], simpleMatch[2], simpleMatch[3]);
+  }
+  return buildIso(match[1], match[2], match[3]);
+}
+
+function buildIso(dayStr: string, monthName: string, yearStr: string): string | null {
+  const months: Record<string, string> = {
+    january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03',
+    april: '04', apr: '04', may: '05', june: '06', jun: '06',
+    july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09',
+    october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
+  };
+  const month = months[monthName];
+  if (!month) return null;
+  const maxDays = new Date(parseInt(yearStr), parseInt(month), 0).getDate();
+  const dayNum = Math.min(parseInt(dayStr), maxDays);
+  return `${yearStr}-${month}-${String(dayNum).padStart(2, '0')}`;
+}
+
 interface AIResponseRendererProps {
   text: string;
   onDateClick: (isoDateStr: string) => void;
 }
 
-/**
- * Converts text like "1st july 2026" into standard "2026-07-01"
- */
-function parseReadableDateToISO(readableDate: string): string | null {
-  const clean = readableDate.toLowerCase().trim();
-  
-  // Match patterns like "1st july 2026", "2nd march 2025", "15th december 2024"
-  const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
-  if (!match) {
-    // Try matching with just space (without ordinal suffix)
-    const simpleMatch = clean.match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/);
-    if (!simpleMatch) return null;
-    const day = simpleMatch[1].padStart(2, '0');
-    const monthName = simpleMatch[2];
-    const year = simpleMatch[3];
-    
-    const months: Record<string, string> = {
-      january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
-      april: '04', apr: '04', may: '05', june: '06', jun: '06',
-      july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
-      october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
-    };
-    
-    const month = months[monthName];
-    if (!month) return null;
-    const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
-    const dayNum = Math.min(parseInt(day), maxDays);
-    return `${year}-${month}-${String(dayNum).padStart(2, '0')}`;
-  }
-  
-  const day = match[1].padStart(2, '0');
-  const monthName = match[2];
-  const year = match[3];
-  
-  const months: Record<string, string> = {
-    january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
-    april: '04', apr: '04', may: '05', june: '06', jun: '06',
-    july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
-    october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
-  };
-  
-  const month = months[monthName];
-  if (!month) return null;
-  const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const dayNum = Math.min(parseInt(day), maxDays);
-  return `${year}-${month}-${String(dayNum).padStart(2, '0')}`;
-}
-
-/**
- * Renders AI response text, turning readable date strings into clickable system buttons
- */
 export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
-  // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
   const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
-  
   const parts: ReactNode[] = [];
   let lastIndex = 0;
   let match;
   let keyIndex = 0;
 
   while ((match = dateRegex.exec(text)) !== null) {
-    // Add text before the match
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex, match.index)}</span>);
     }
-    
     const rawReadableDate = match[0];
     const isoDate = parseReadableDateToISO(rawReadableDate);
-    
     if (isoDate) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
           onClick={() => onDateClick(isoDate)}
-          className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors cursor-pointer"
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            font: 'inherit',
-            color: '#22d3ee',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            textDecoration: 'underline'
-          }}
+          className="font-bold text-cyan-300 hover:text-cyan-200 mx-0.5 underline cursor-pointer bg-cyan-500/10 hover:bg-cyan-500/20 px-1.5 py-0.5 rounded transition-colors"
           title={`Click to open entry for ${isoDate}`}
         >
           {rawReadableDate}
@@ -209,18 +188,17 @@ export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProp
     } else {
       parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
     }
-    
     lastIndex = match.index + match[0].length;
   }
-
-  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex)}</span>);
   }
-
   return <>{parts.length > 0 ? parts : text}</>;
 }
 
+// ============================================================================
+// Main App Component
+// ============================================================================
 
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
@@ -229,6 +207,7 @@ export default function App() {
   const [passphrase, setPassphrase] = useState("");
   const [vault, setVault] = useState<VaultData>(() => createEmptyVault());
   const [remoteSha, setRemoteSha] = useState<string | null>(null);
+  const remoteShaRef = useRef<string | null>(null);
   const [syncState, setSyncState] = useState<SyncState>("locked");
   const [syncError, setSyncError] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -238,8 +217,11 @@ export default function App() {
   const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
   const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
   const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
-  const [lightboxAttachments, setLightboxAttachments] = useState<Attachment[] | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState(0);
+
+  // Keep remoteSha ref in sync for background save access
+  useEffect(() => {
+    remoteShaRef.current = remoteSha;
+  }, [remoteSha]);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -256,26 +238,25 @@ export default function App() {
       if (!cleanedConfig.owner || !cleanedConfig.repo || !cleanedConfig.branch || !cleanedConfig.path) {
         throw new Error("Add your GitHub owner, repo, branch, and vault file path.");
       }
-
       if (!cleanedConfig.token) {
         throw new Error("Add a GitHub token with Contents read and write access.");
       }
-
       if (!nextPassphrase.trim()) {
         throw new Error("Add the passphrase that unlocks your diary vault.");
       }
 
-      const remote = await fetchGitHubVaultFile(cleanedConfig);
+      const remote = await fetchGitHubFile(cleanedConfig, cleanedConfig.path);
       let nextVault = createEmptyVault();
       let nextSha = remote.sha;
 
       if (remote.exists && remote.text.trim()) {
-        const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
+        const parsed = JSON.parse(remote.text) as EncryptedFile | VaultData;
         nextVault = await openVaultFile(parsed, nextPassphrase);
       } else {
         const encrypted = await encryptVault(nextVault, nextPassphrase);
-        const created = await putGitHubVaultFile(
+        const created = await putGitHubFile(
           cleanedConfig,
+          cleanedConfig.path,
           encrypted,
           null,
           "Create encrypted Moonlit Diary vault",
@@ -293,6 +274,7 @@ export default function App() {
       setPassphrase(nextPassphrase);
       setVault(nextVault);
       setRemoteSha(nextSha);
+      remoteShaRef.current = nextSha;
       setSyncState("ready");
       setIsUnlocked(true);
       setScreen("home");
@@ -308,15 +290,15 @@ export default function App() {
     setSyncState("loading");
 
     try {
-      const remote = await fetchGitHubVaultFile(config);
+      const remote = await fetchGitHubFile(config, config.path);
       if (!remote.exists || !remote.text.trim()) {
         throw new Error("The vault file was not found on GitHub.");
       }
-
-      const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
+      const parsed = JSON.parse(remote.text) as EncryptedFile | VaultData;
       const nextVault = await openVaultFile(parsed, passphrase);
       setVault(nextVault);
       setRemoteSha(remote.sha);
+      remoteShaRef.current = remote.sha;
       setSyncState("ready");
     } catch (error) {
       setSyncState("error");
@@ -324,7 +306,8 @@ export default function App() {
     }
   }
 
-  async function persistVault(nextVault: VaultData, commitMessage: string) {
+  // Background save - returns immediately, save happens in background
+  async function saveEntryInBackground(entry: DiaryEntry, oldEntry: DiaryEntry | undefined): Promise<void> {
     if (!config || !passphrase) {
       throw new Error("Unlock your GitHub vault before saving.");
     }
@@ -333,10 +316,66 @@ export default function App() {
     setSyncState("saving");
 
     try {
+      // Step 1: Upload any new attachments as multiple encrypted chunk files
+      const updatedAttachments: Attachment[] = [];
+      for (const att of entry.attachments) {
+        const alreadyRemote = (att.chunks && att.chunks.length > 0) || att.remotePath;
+        if (att.dataUrl && !alreadyRemote) {
+          // New attachment - split into chunks, encrypt each, upload as separate files
+          const chunks = chunkString(att.dataUrl, CHUNK_SIZE_BYTES);
+          const uploadedChunks: AttachmentChunk[] = [];
+          for (let i = 0; i < chunks.length; i++) {
+            const chunkPath = getAttachmentChunkPath(config, att.id, i);
+            const encrypted = await encryptAttachmentData(chunks[i], passphrase);
+            const uploaded = await putGitHubFile(
+              config,
+              chunkPath,
+              encrypted,
+              null,
+              `Upload attachment ${att.name} (chunk ${i + 1}/${chunks.length})`,
+            );
+            uploadedChunks.push({ path: chunkPath, sha: uploaded.sha ?? undefined });
+          }
+          updatedAttachments.push({
+            ...att,
+            dataUrl: undefined, // Clear from vault, keep only metadata
+            chunks: uploadedChunks,
+            remotePath: undefined,
+            remoteSha: undefined,
+          });
+        } else {
+          // Already remote (chunks or legacy single file) - strip dataUrl if any
+          updatedAttachments.push({ ...att, dataUrl: undefined });
+        }
+      }
+
+      // Step 2: Delete attachment files that were removed from the entry
+      if (oldEntry) {
+        const newIds = new Set(updatedAttachments.map(a => a.id));
+        const orphans = oldEntry.attachments.filter(a => !newIds.has(a.id));
+        for (const orphan of orphans) {
+          await deleteAttachmentFiles(config, orphan).catch(e => {
+            console.warn(`Failed to delete orphan attachment ${orphan.name}:`, e);
+          });
+        }
+      }
+
+      const cleanedEntry: DiaryEntry = { ...entry, attachments: updatedAttachments };
+
+      // Step 3: Update vault state and save
+      const entries = vault.entries.filter((item) => item.date !== cleanedEntry.date);
+      const nextVault: VaultData = {
+        ...vault,
+        updatedAt: new Date().toISOString(),
+        entries: [...entries, cleanedEntry].sort((a, b) => a.date.localeCompare(b.date)),
+      };
+
       const encrypted = await encryptVault(nextVault, passphrase);
-      const saved = await putGitHubVaultFile(config, encrypted, remoteSha, commitMessage);
+      const saved = await putGitHubFile(config, config.path, encrypted, remoteShaRef.current, `Save diary entry for ${cleanedEntry.date}`);
+
       setVault(nextVault);
       setRemoteSha(saved.sha);
+      remoteShaRef.current = saved.sha;
       setSyncState("saved");
     } catch (error) {
       setSyncState("error");
@@ -345,71 +384,71 @@ export default function App() {
     }
   }
 
-  function openLightbox(attachments: Attachment[], startIndex: number) {
-    setLightboxAttachments(attachments);
-    setLightboxIndex(startIndex);
-  }
-
-  function closeLightbox() {
-    setLightboxAttachments(null);
-    setLightboxIndex(0);
-  }
-
-  function goToPrevLightboxItem() {
-    if (!lightboxAttachments) return;
-    setLightboxIndex((prev) => (prev > 0 ? prev - 1 : lightboxAttachments.length - 1));
-  }
-
-  function goToNextLightboxItem() {
-    if (!lightboxAttachments) return;
-    setLightboxIndex((prev) => (prev < lightboxAttachments.length - 1 ? prev + 1 : 0));
-  }
-
-  async function saveEntry(entry: DiaryEntry) {
-    // Clear draft when entry is explicitly saved
+  // Save entry - updates local state IMMEDIATELY, syncs in background
+  function saveEntry(entry: DiaryEntry): void {
     clearDraft(entry.date);
-    
+
+    const oldEntry = vault.entries.find(e => e.date === entry.date);
+
+    // Update UI immediately (optimistic update)
     const entries = vault.entries.filter((item) => item.date !== entry.date);
-    const nextVault: VaultData = {
+    const optimisticVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
       entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
     };
-
-    // Optimistically update the local vault state immediately so UI reflects the save
-    setVault(nextVault);
+    setVault(optimisticVault);
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
 
-    // Perform the actual GitHub save in the background
-    // Don't await here - let it complete in background while user can navigate
-    persistVault(nextVault, `Save diary entry for ${entry.date}`).catch((error) => {
-      console.error("Background save failed:", error);
-      // Error is already displayed via syncError/syncState
+    // Save to GitHub in background
+    saveEntryInBackground(entry, oldEntry).catch(err => {
+      console.error("Background save failed:", err);
     });
   }
 
-  async function deleteEntry(dateKey: string) {
-    // Clear draft when entry is deleted
+  async function deleteEntry(dateKey: string): Promise<void> {
+    if (!config || !passphrase) return;
     clearDraft(dateKey);
-    
+
+    const oldEntry = vault.entries.find(e => e.date === dateKey);
+
+    // Optimistic update
     const nextVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
       entries: vault.entries.filter((entry) => entry.date !== dateKey),
     };
-
-    // Optimistically update and navigate
     setVault(nextVault);
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
 
-    // Delete in background
-    persistVault(nextVault, `Delete diary entry for ${dateKey}`).catch((error) => {
-      console.error("Background delete failed:", error);
-    });
+    // Background delete
+    (async () => {
+      setSyncError("");
+      setSyncState("saving");
+      try {
+        // Delete orphan attachment files (both chunked & legacy single-file)
+        if (oldEntry) {
+          for (const att of oldEntry.attachments) {
+            await deleteAttachmentFiles(config, att).catch((e: unknown) => {
+              console.warn(`Failed to delete attachment ${att.name}:`, e);
+            });
+          }
+        }
+
+        const encrypted = await encryptVault(nextVault, passphrase);
+        const saved = await putGitHubFile(config, config.path, encrypted, remoteShaRef.current, `Delete diary entry for ${dateKey}`);
+        setRemoteSha(saved.sha);
+        remoteShaRef.current = saved.sha;
+        setSyncState("saved");
+      } catch (error) {
+        setSyncState("error");
+        setSyncError(getErrorMessage(error));
+      }
+    })();
   }
 
   function openEntry(dateKey: string) {
@@ -423,6 +462,7 @@ export default function App() {
     setVault(createEmptyVault());
     setPassphrase("");
     setRemoteSha(null);
+    remoteShaRef.current = null;
     setSyncState("locked");
     setSyncError("");
     setIsUnlocked(false);
@@ -475,17 +515,18 @@ export default function App() {
             />
           ) : null}
 
-          {screen === "entry" ? (
+          {screen === "entry" && config ? (
             <EntryEditor
               key={editingDate}
               dateKey={editingDate}
               entry={entryByDate.get(editingDate)}
               entryByDate={entryByDate}
               syncState={syncState}
+              config={config}
+              passphrase={passphrase}
               onBack={() => setScreen("home")}
               onSave={saveEntry}
               onDelete={deleteEntry}
-              onOpenLightbox={openLightbox}
             />
           ) : null}
 
@@ -510,27 +551,41 @@ export default function App() {
           ) : null}
         </main>
       </div>
-
-      {/* Lightbox Viewer */}
-      {lightboxAttachments && (
-        <LightboxViewer
-          attachments={lightboxAttachments}
-          currentIndex={lightboxIndex}
-          onClose={closeLightbox}
-          onPrev={goToPrevLightboxItem}
-          onNext={goToNextLightboxItem}
-        />
-      )}
     </div>
   );
 }
 
-// Draft management functions
+// ============================================================================
+// Draft management
+// ============================================================================
+
 function saveDraft(draft: DraftEntry): void {
   try {
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    // Don't store full dataUrls of attachments in draft (too big for localStorage)
+    // Only store attachment metadata - if user has new uploads, they'll need to re-add
+    // We do keep the dataUrl for small attachments only
+    const draftToStore: DraftEntry = {
+      ...draft,
+      attachments: draft.attachments.map(att => {
+        // Keep dataUrl only for small attachments (<2MB) to avoid localStorage overflow
+        if (att.dataUrl && att.size > 2 * 1024 * 1024) {
+          return { ...att, dataUrl: undefined };
+        }
+        return att;
+      }),
+    };
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draftToStore));
   } catch (e) {
-    console.warn("Failed to save draft to localStorage:", e);
+    // localStorage quota likely exceeded - try storing without any dataUrls
+    try {
+      const slim: DraftEntry = {
+        ...draft,
+        attachments: draft.attachments.map(att => ({ ...att, dataUrl: undefined })),
+      };
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(slim));
+    } catch (e2) {
+      console.warn("Failed to save draft to localStorage:", e2);
+    }
   }
 }
 
@@ -539,7 +594,6 @@ function loadDraft(dateKey: string): DraftEntry | null {
     const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as DraftEntry;
-    // Only return draft if it matches the requested date
     return draft.dateKey === dateKey ? draft : null;
   } catch {
     return null;
@@ -556,9 +610,13 @@ function clearDraft(dateKey: string): void {
       }
     }
   } catch {
-    // Ignore errors when clearing draft
+    // ignore
   }
 }
+
+// ============================================================================
+// Unlock Screen
+// ============================================================================
 
 function UnlockScreen({
   initialConfig,
@@ -611,8 +669,8 @@ function UnlockScreen({
               <p className="mt-2 text-slate-400">A dot appears on every saved day.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Rich entries</p>
-              <p className="mt-2 text-slate-400">Headings, bold, italic, underline, lists, links.</p>
+              <p className="text-cyan-100">Background save</p>
+              <p className="mt-2 text-slate-400">Save and keep browsing while it syncs.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
               <p className="text-cyan-100">Mood pixels</p>
@@ -633,76 +691,35 @@ function UnlockScreen({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="GitHub owner">
-                <input
-                  value={draftConfig.owner}
-                  onChange={(event) => updateConfig("owner", event.target.value)}
-                  placeholder="your-username"
-                  className="field-input"
-                />
+                <input value={draftConfig.owner} onChange={(event) => updateConfig("owner", event.target.value)} placeholder="your-username" className="field-input" />
               </Field>
               <Field label="Repository">
-                <input
-                  value={draftConfig.repo}
-                  onChange={(event) => updateConfig("repo", event.target.value)}
-                  placeholder="my-diary-repo"
-                  className="field-input"
-                />
+                <input value={draftConfig.repo} onChange={(event) => updateConfig("repo", event.target.value)} placeholder="my-diary-repo" className="field-input" />
               </Field>
               <Field label="Branch">
-                <input
-                  value={draftConfig.branch}
-                  onChange={(event) => updateConfig("branch", event.target.value)}
-                  placeholder="main"
-                  className="field-input"
-                />
+                <input value={draftConfig.branch} onChange={(event) => updateConfig("branch", event.target.value)} placeholder="main" className="field-input" />
               </Field>
               <Field label="Vault file path">
-                <input
-                  value={draftConfig.path}
-                  onChange={(event) => updateConfig("path", event.target.value)}
-                  placeholder="data/moonlit-diary-vault.json"
-                  className="field-input"
-                />
+                <input value={draftConfig.path} onChange={(event) => updateConfig("path", event.target.value)} placeholder="data/moonlit-diary-vault.json" className="field-input" />
               </Field>
             </div>
 
             <Field label="GitHub token">
-              <input
-                type="password"
-                value={draftConfig.token}
-                onChange={(event) => updateConfig("token", event.target.value)}
-                placeholder="Fine-grained token with Contents read/write"
-                className="field-input"
-              />
+              <input type="password" value={draftConfig.token} onChange={(event) => updateConfig("token", event.target.value)} placeholder="Fine-grained token with Contents read/write" className="field-input" />
             </Field>
 
             <Field label="Diary passphrase">
-              <input
-                type="password"
-                value={passphrase}
-                onChange={(event) => setPassphrase(event.target.value)}
-                placeholder="Only this opens the encrypted vault"
-                className="field-input"
-              />
+              <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="Only this opens the encrypted vault" className="field-input" />
             </Field>
 
             <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={rememberConfig}
-                onChange={(event) => setRememberConfig(event.target.checked)}
-                className="h-4 w-4 accent-cyan-300"
-              />
+              <input type="checkbox" checked={rememberConfig} onChange={(event) => setRememberConfig(event.target.checked)} className="h-4 w-4 accent-cyan-300" />
               Remember GitHub details on this device. Diary data still stays in the GitHub vault file.
             </label>
 
             {syncError ? <SyncError message={syncError} compact /> : null}
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="group relative w-full overflow-hidden rounded-2xl bg-cyan-200 px-5 py-4 text-sm font-semibold uppercase tracking-[0.26em] text-slate-950 shadow-2xl shadow-cyan-500/25 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
+            <button type="submit" disabled={isLoading} className="group relative w-full overflow-hidden rounded-2xl bg-cyan-200 px-5 py-4 text-sm font-semibold uppercase tracking-[0.26em] text-slate-950 shadow-2xl shadow-cyan-500/25 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
               <span className="relative z-10">{isLoading ? "Opening vault..." : "Unlock diary"}</span>
               <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/60 to-transparent transition duration-700 group-hover:translate-x-full" />
             </button>
@@ -712,6 +729,10 @@ function UnlockScreen({
     </div>
   );
 }
+
+// ============================================================================
+// Top Bar
+// ============================================================================
 
 function TopBar({
   syncState,
@@ -747,25 +768,15 @@ function TopBar({
 
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
-        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
-          Calendar
-        </button>
+        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>Calendar</button>
         <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
           <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
           <span className="relative flex items-center gap-1">✨ AI Hub</span>
         </button>
-        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
-          Year in pixels
-        </button>
-        <button type="button" onClick={onNewEntry} className="nav-button-primary">
-          New entry
-        </button>
-        <button type="button" onClick={onSync} className="nav-button">
-          Sync
-        </button>
-        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
-          Lock
-        </button>
+        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>Year in pixels</button>
+        <button type="button" onClick={onNewEntry} className="nav-button-primary">New entry</button>
+        <button type="button" onClick={onSync} className="nav-button">Sync</button>
+        <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">Lock</button>
       </div>
     </header>
   );
@@ -776,24 +787,26 @@ function SyncBadge({ state }: { state: SyncState }) {
     locked: "Locked",
     loading: "Loading",
     ready: "Ready",
-    saving: "Saving",
+    saving: "Saving in background",
     saved: "Saved",
     error: "Needs attention",
   };
 
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-300">
-      <span
-        className={cn(
-          "h-2 w-2 rounded-full",
-          state === "error" ? "bg-rose-400" : "bg-cyan-300",
-          state === "loading" || state === "saving" ? "animate-pulse" : "",
-        )}
-      />
+      <span className={cn(
+        "h-2 w-2 rounded-full",
+        state === "error" ? "bg-rose-400" : state === "saved" ? "bg-emerald-400" : "bg-cyan-300",
+        state === "loading" || state === "saving" ? "animate-pulse" : "",
+      )} />
       {labelByState[state]}
     </span>
   );
 }
+
+// ============================================================================
+// Home View
+// ============================================================================
 
 function HomeView({
   entryByDate,
@@ -818,18 +831,16 @@ function HomeView({
   const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
   const yearLabel = visibleMonth.getFullYear();
 
-  // Check if there's a draft for the selected date
   const hasDraft = useMemo(() => {
     const draft = loadDraft(selectedDate);
     return draft !== null && (
-      draft.title.trim() || 
-      draft.bodyHtml.trim() || 
+      draft.title.trim() ||
+      draft.bodyHtml.trim() ||
       draft.dailyWin.trim() ||
       draft.attachments.length > 0
     );
   }, [selectedDate]);
 
-  // Dynamic tag compiler for current highlighted entry
   const entryTags = useMemo(() => {
     if (!selectedEntry) return [];
     return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
@@ -845,35 +856,13 @@ function HomeView({
               <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl">{monthLabel}</h1>
               <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
             </div>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Pick a day, write your entry, and the calendar marks it with the saved mood color.
-            </p>
+            <p className="max-w-2xl text-sm leading-6 text-slate-400">Pick a day, write your entry, and the calendar marks it with the saved mood color.</p>
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))}
-              className="round-button"
-              aria-label="Previous month"
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))}
-              className="round-button"
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))}
-              className="round-button"
-              aria-label="Next month"
-            >
-              Next
-            </button>
+            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))} className="round-button" aria-label="Previous month">Prev</button>
+            <button type="button" onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))} className="round-button">Today</button>
+            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))} className="round-button" aria-label="Next month">Next</button>
           </div>
         </div>
 
@@ -909,7 +898,7 @@ function HomeView({
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
                 <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
               </div>
-              
+
               {entryTags.length > 0 && (
                 <div>
                   <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
@@ -941,9 +930,6 @@ function HomeView({
                   You have an unsaved draft for this day
                 </p>
               </div>
-              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-2 w-full nav-button-primary justify-center py-4 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-400/30 hover:from-amber-500/30 hover:to-orange-500/30">
-                Continue Editing Draft
-              </button>
             </div>
           ) : (
             <div className="mt-5 rounded-3xl border border-dashed border-white/15 bg-black/20 p-5 text-sm leading-6 text-slate-400">
@@ -972,6 +958,10 @@ function HomeView({
   );
 }
 
+// ============================================================================
+// Monthly Calendar
+// ============================================================================
+
 function MonthlyCalendar({
   visibleMonth,
   selectedDate,
@@ -991,9 +981,7 @@ function MonthlyCalendar({
   return (
     <div className="mt-8">
       <div className="grid grid-cols-7 gap-2 px-1 text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 sm:gap-3">
-        {WEEKDAYS.map((day) => (
-          <span key={day}>{day}</span>
-        ))}
+        {WEEKDAYS.map((day) => <span key={day}>{day}</span>)}
       </div>
 
       <div className="mt-3 grid grid-cols-7 gap-2 sm:gap-3">
@@ -1024,24 +1012,13 @@ function MonthlyCalendar({
               </span>
 
               {entry ? (
-                <span
-                  className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150"
-                  style={{ backgroundColor: mood?.color, boxShadow: `0 0 18px ${mood?.glow}` }}
-                />
+                <span className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150" style={{ backgroundColor: mood?.color, boxShadow: `0 0 18px ${mood?.glow}` }} />
               ) : hasDraft ? (
-                <span
-                  className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-amber-400/60 shadow-[0_0_12px_rgba(251,191,36,0.5)] transition duration-300 group-hover:scale-150 animate-pulse"
-                  title="Unsaved draft"
-                />
+                <span className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-amber-400/60 shadow-[0_0_12px_rgba(251,191,36,0.5)] transition duration-300 group-hover:scale-150 animate-pulse" title="Unsaved draft" />
               ) : null}
 
               {entry ? (
-                <span
-                  className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block"
-                  title={entry.title}
-                >
-                  {entry.title}
-                </span>
+                <span className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block" title={entry.title}>{entry.title}</span>
               ) : null}
             </button>
           );
@@ -1051,87 +1028,84 @@ function MonthlyCalendar({
   );
 }
 
+// ============================================================================
+// Entry Editor
+// ============================================================================
+
 function EntryEditor({
   dateKey,
   entry,
   entryByDate,
   syncState,
+  config,
+  passphrase,
   onBack,
   onSave,
   onDelete,
-  onOpenLightbox,
 }: {
   dateKey: string;
   entry?: DiaryEntry;
   entryByDate: Map<string, DiaryEntry>;
   syncState: SyncState;
+  config: GitHubConfig;
+  passphrase: string;
   onBack: () => void;
-  onSave: (entry: DiaryEntry) => Promise<void>;
+  onSave: (entry: DiaryEntry) => void;
   onDelete: (dateKey: string) => Promise<void>;
-  onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
 }) {
-  // Load existing draft or use entry data
   const existingDraft = useMemo(() => loadDraft(dateKey), [dateKey]);
-  
+
+  const initialAttachments = useMemo(() => {
+    // Merge draft attachments with entry attachments
+    // Draft has the most recent state including new uploads
+    if (existingDraft) return existingDraft.attachments;
+    return entry?.attachments ?? [];
+  }, [existingDraft, entry]);
+
   const [title, setTitle] = useState(existingDraft?.title ?? entry?.title ?? "");
   const [mood, setMood] = useState<MoodId>(existingDraft?.mood ?? entry?.mood ?? "happy");
   const [bodyHtml, setBodyHtml] = useState(existingDraft?.bodyHtml ?? entry?.bodyHtml ?? "");
   const [dailyWin, setDailyWin] = useState(existingDraft?.dailyWin ?? entry?.dailyWin ?? "");
-  const [attachments, setAttachments] = useState<Attachment[]>(existingDraft?.attachments ?? entry?.attachments ?? []);
+  const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<string>("");
-  
-  const isSaving = syncState === "saving" || isWorking;
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+
+  const isSaving = isWorking;
   const activeMood = MOOD_BY_ID[mood];
-  const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const autoSaveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const computedTags = useMemo(() => {
-    return extractTopicsAndTags(bodyHtml, title);
-  }, [bodyHtml, title]);
+  const computedTags = useMemo(() => extractTopicsAndTags(bodyHtml, title), [bodyHtml, title]);
 
-  // Track if we have unsaved changes compared to last draft save
   const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
-  
+
   useEffect(() => {
     setHasUnsavedChanges(currentDraftState !== lastSavedDraft);
   }, [currentDraftState, lastSavedDraft]);
 
-  // Initialize lastSavedDraft when existing draft or entry is loaded
   useEffect(() => {
     const initialState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
     setLastSavedDraft(initialState);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Auto-save draft to localStorage every second when there are changes
   useEffect(() => {
     if (!hasUnsavedChanges) return;
-    
     autoSaveIntervalRef.current = setTimeout(() => {
-      const draft: DraftEntry = {
-        dateKey,
-        title,
-        mood,
-        bodyHtml,
-        dailyWin,
-        attachments,
-        savedAt: new Date().toISOString(),
-      };
+      const draft: DraftEntry = { dateKey, title, mood, bodyHtml, dailyWin, attachments, savedAt: new Date().toISOString() };
       saveDraft(draft);
       setLastSavedDraft(currentDraftState);
       setHasUnsavedChanges(false);
     }, 1000);
 
     return () => {
-      if (autoSaveIntervalRef.current) {
-        clearTimeout(autoSaveIntervalRef.current);
-      }
+      if (autoSaveIntervalRef.current) clearTimeout(autoSaveIntervalRef.current);
     };
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, hasUnsavedChanges, currentDraftState]);
 
-  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
   async function triggerAIPrompt() {
     setAIPrompt("Consulting your timeline memory...");
     try {
@@ -1143,7 +1117,7 @@ function EntryEditor({
     }
   }
 
-  async function handleSave() {
+  function handleSave() {
     setLocalError("");
     setIsWorking(true);
 
@@ -1161,10 +1135,11 @@ function EntryEditor({
         updatedAt: now,
       };
 
-      await onSave(nextEntry);
+      // Fire-and-forget save - returns immediately
+      onSave(nextEntry);
+      // Navigation happens inside onSave, no need to wait
     } catch (error) {
       setLocalError(getErrorMessage(error));
-    } finally {
       setIsWorking(false);
     }
   }
@@ -1185,36 +1160,58 @@ function EntryEditor({
     }
   }
 
-  // Warn user before navigating away with unsaved changes
   const handleBack = useCallback(() => {
-    // Save draft immediately before going back
     if (title.trim() || bodyHtml.trim() || dailyWin.trim() || attachments.length > 0) {
-      const draft: DraftEntry = {
-        dateKey,
-        title,
-        mood,
-        bodyHtml,
-        dailyWin,
-        attachments,
-        savedAt: new Date().toISOString(),
-      };
+      const draft: DraftEntry = { dateKey, title, mood, bodyHtml, dailyWin, attachments, savedAt: new Date().toISOString() };
       saveDraft(draft);
     }
     onBack();
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, onBack]);
 
+  // Lazy load attachment data when needed - supports both chunked & legacy formats
+  const loadAttachmentData = useCallback(async (att: Attachment, onProgress?: (msg: string) => void): Promise<string> => {
+    if (att.dataUrl) return att.dataUrl;
+
+    let dataUrl: string;
+
+    if (att.chunks && att.chunks.length > 0) {
+      // New chunked format - download & decrypt all chunks, concatenate
+      const decryptedChunks: string[] = [];
+      const total = att.chunks.length;
+      for (let i = 0; i < total; i++) {
+        const chunk = att.chunks[i];
+        if (onProgress) onProgress(`Downloading chunk ${i + 1} of ${total}...`);
+        const remote = await fetchGitHubFile(config, chunk.path);
+        if (!remote.exists) throw new Error(`Attachment chunk not found: ${chunk.path}`);
+        const parsed = JSON.parse(remote.text) as EncryptedFile;
+        const decrypted = await decryptAttachmentData(parsed, passphrase);
+        decryptedChunks.push(decrypted);
+      }
+      if (onProgress) onProgress("Assembling...");
+      dataUrl = decryptedChunks.join("");
+    } else if (att.remotePath) {
+      // Legacy single-file format
+      const remote = await fetchGitHubFile(config, att.remotePath);
+      if (!remote.exists) throw new Error(`Attachment file not found: ${att.name}`);
+      const parsed = JSON.parse(remote.text) as EncryptedFile;
+      dataUrl = await decryptAttachmentData(parsed, passphrase);
+    } else {
+      throw new Error("Attachment has no data source");
+    }
+
+    // Update attachment with loaded data
+    setAttachments(prev => prev.map(a => a.id === att.id ? { ...a, dataUrl } : a));
+    return dataUrl;
+  }, [config, passphrase]);
+
   return (
     <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <button type="button" onClick={handleBack} className="round-button w-fit">
-            Back to calendar
-          </button>
+          <button type="button" onClick={handleBack} className="round-button w-fit">Back to calendar</button>
           <div className="flex items-center gap-2">
             {entry ? (
-              <button type="button" onClick={handleDelete} disabled={isSaving} className="danger-button">
-                Delete
-              </button>
+              <button type="button" onClick={handleDelete} disabled={isSaving} className="danger-button">Delete</button>
             ) : null}
             <button type="button" onClick={handleSave} disabled={isSaving} className="nav-button-primary py-3">
               {isSaving ? "Saving..." : "Save entry"}
@@ -1222,7 +1219,6 @@ function EntryEditor({
           </div>
         </div>
 
-        {/* Auto-save indicator */}
         <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
           {hasUnsavedChanges ? (
             <span className="flex items-center gap-1.5 text-amber-400/70">
@@ -1232,12 +1228,17 @@ function EntryEditor({
           ) : (
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/50" />
-              Draft saved
+              Draft saved locally
+            </span>
+          )}
+          {syncState === "saving" && (
+            <span className="flex items-center gap-1.5 text-cyan-400/70 ml-3">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              Syncing to GitHub in background
             </span>
           )}
         </div>
 
-        {/* AI Prompt Journaling Assistant Panel widget */}
         <div className="mt-4 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
           <div className="flex items-center justify-between gap-4">
@@ -1245,18 +1246,10 @@ function EntryEditor({
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
               <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
             </div>
-            <button 
-              type="button" 
-              onClick={triggerAIPrompt} 
-              className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
-            >
-              Generate Prompt
-            </button>
+            <button type="button" onClick={triggerAIPrompt} className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0">Generate Prompt</button>
           </div>
           {aiPrompt && (
-            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">
-              "{aiPrompt}"
-            </div>
+            <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">"{aiPrompt}"</div>
           )}
         </div>
 
@@ -1269,24 +1262,16 @@ function EntryEditor({
             </span>
           </div>
 
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Give today a title"
-            className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl"
-          />
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Give today a title" className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl" />
 
           <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
 
-          {/* Extracted Topic clouds list display area */}
           {computedTags.length > 0 && (
             <div className="pt-2">
               <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
               <div className="flex flex-wrap gap-1.5">
                 {computedTags.map(tag => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
-                    #{tag}
-                  </span>
+                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">#{tag}</span>
                 ))}
               </div>
             </div>
@@ -1302,15 +1287,10 @@ function EntryEditor({
           <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
           <div className="mt-5 grid gap-2">
             {MOODS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setMood(item.id)}
-                className={cn(
-                  "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
-                  item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
-                )}
-              >
+              <button key={item.id} type="button" onClick={() => setMood(item.id)} className={cn(
+                "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
+                item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
+              )}>
                 <span className="h-4 w-4 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium text-white">{item.label}</span>
@@ -1323,20 +1303,42 @@ function EntryEditor({
 
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
-          <textarea
-            value={dailyWin}
-            onChange={(event) => setDailyWin(event.target.value)}
-            placeholder="One small productive thing, lesson, or gain from today..."
-            rows={5}
-            className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35"
-          />
+          <textarea value={dailyWin} onChange={(event) => setDailyWin(event.target.value)} placeholder="One small productive thing, lesson, or gain from today..." rows={5} className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35" />
         </section>
 
-        <AttachmentPanel attachments={attachments} onChange={setAttachments} onOpenLightbox={onOpenLightbox} />
+        <AttachmentPanel
+          attachments={attachments}
+          onChange={setAttachments}
+          onView={(index) => setViewerIndex(index)}
+          loadAttachmentData={loadAttachmentData}
+        />
       </aside>
+
+      {viewerIndex !== null && (
+        <MediaLightbox
+          attachments={attachments}
+          initialIndex={viewerIndex}
+          onClose={() => setViewerIndex(null)}
+          loadAttachmentData={loadAttachmentData}
+          onRemove={(id) => {
+            setAttachments(prev => prev.filter(a => a.id !== id));
+            // close viewer if no items left, or adjust index
+            setViewerIndex(prevIdx => {
+              if (prevIdx === null) return null;
+              const newLen = attachments.length - 1;
+              if (newLen === 0) return null;
+              return Math.min(prevIdx, newLen - 1);
+            });
+          }}
+        />
+      )}
     </section>
   );
 }
+
+// ============================================================================
+// Rich Text Editor
+// ============================================================================
 
 function RichTextEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -1408,25 +1410,91 @@ function ToolbarButton({
   underline?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onMouseDown={(event) => {
-        event.preventDefault();
-        onClick();
-      }}
-      className={cn(
-        "rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-200/40 hover:bg-cyan-200/10 hover:text-white",
-        strong ? "font-black" : "",
-        italic ? "italic" : "",
-        underline ? "underline" : "",
-      )}
-    >
-      {label}
-    </button>
+    <button type="button" onMouseDown={(event) => { event.preventDefault(); onClick(); }} className={cn(
+      "rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-200/40 hover:bg-cyan-200/10 hover:text-white",
+      strong ? "font-black" : "",
+      italic ? "italic" : "",
+      underline ? "underline" : "",
+    )}>{label}</button>
   );
 }
 
-function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void; onOpenLightbox: (attachments: Attachment[], startIndex: number) => void }) {
+// ============================================================================
+// Attachment Panel
+// ============================================================================
+
+function AttachmentThumb({
+  attachment,
+  loadAttachmentData,
+}: {
+  attachment: Attachment;
+  loadAttachmentData: (att: Attachment, onProgress?: (msg: string) => void) => Promise<string>;
+}) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(attachment.dataUrl ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (attachment.dataUrl) {
+      setThumbUrl(attachment.dataUrl);
+      return;
+    }
+    // Only auto-load images for thumbnails. Videos show placeholder.
+    if (attachment.type.startsWith("image/") && !thumbUrl && !loading) {
+      setLoading(true);
+      loadAttachmentData(attachment)
+        .then(url => setThumbUrl(url))
+        .catch(err => setError(getErrorMessage(err)))
+        .finally(() => setLoading(false));
+    }
+  }, [attachment, loadAttachmentData, thumbUrl, loading]);
+
+  if (loading) {
+    return (
+      <div className="h-full w-full flex items-center justify-center bg-slate-900/50">
+        <div className="text-xs text-slate-400 animate-pulse">Loading...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="h-full w-full flex items-center justify-center bg-slate-900/50">
+        <div className="text-xs text-rose-300/70 px-2 text-center">Could not load</div>
+      </div>
+    );
+  }
+
+  if (attachment.type.startsWith("image/") && thumbUrl) {
+    return <img src={thumbUrl} alt={attachment.name} className="h-full w-full object-cover" />;
+  }
+
+  if (attachment.type.startsWith("video/")) {
+    if (thumbUrl) {
+      return <video src={thumbUrl} className="h-full w-full object-cover" muted />;
+    }
+    return (
+      <div className="h-full w-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900 gap-2">
+        <svg className="h-12 w-12 text-cyan-400/60" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <span className="text-xs text-slate-400">Video • Tap to view</span>
+      </div>
+    );
+  }
+
+  return <div className="h-full w-full flex items-center justify-center bg-slate-900/50 text-xs text-slate-500">{attachment.type}</div>;
+}
+
+function AttachmentPanel({
+  attachments,
+  onChange,
+  onView,
+  loadAttachmentData,
+}: {
+  attachments: Attachment[];
+  onChange: (attachments: Attachment[]) => void;
+  onView: (index: number) => void;
+  loadAttachmentData: (att: Attachment, onProgress?: (msg: string) => void) => Promise<string>;
+}) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -1438,7 +1506,6 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
     if (!files?.length) return;
     setError("");
 
-    // Validate file sizes (500MB limit per file)
     const oversizedFiles: string[] = [];
     Array.from(files).forEach(file => {
       if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -1456,9 +1523,7 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
     setLoadingProgress("Preparing to load files...");
 
     try {
-      const nextAttachments = await filesToAttachments(files, (progress) => {
-        setLoadingProgress(progress);
-      });
+      const nextAttachments = await filesToAttachments(files, (progress) => setLoadingProgress(progress));
       onChange([...attachments, ...nextAttachments]);
     } catch (readError) {
       setError(getErrorMessage(readError));
@@ -1469,13 +1534,27 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
     }
   }
 
+  async function handleDownload(attachment: Attachment) {
+    try {
+      const dataUrl = await loadAttachmentData(attachment);
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = attachment.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      setError(`Failed to download ${attachment.name}: ${getErrorMessage(err)}`);
+    }
+  }
+
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
       <input ref={inputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleFileChange} />
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB (base64 adds overhead).</p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Photos & videos up to 500MB each. Each is encrypted & stored as its own GitHub file.</p>
         </div>
         <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
           {isLoading ? "Loading..." : "Add"}
@@ -1483,67 +1562,61 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
       </div>
 
       {loadingProgress && (
-        <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200/80 animate-pulse">
-          {loadingProgress}
-        </div>
+        <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200/80 animate-pulse">{loadingProgress}</div>
       )}
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
         {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
       </div>
 
-      {totalBytes > 50 * 1024 * 1024 ? (
-        <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          ⚠️ GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail to save.
-          {totalBytes > 75 * 1024 * 1024 ? (
-            <strong className="block mt-1 text-rose-300">
-              ⚠️ Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500). Consider removing larger videos.
-            </strong>
-          ) : null}
-        </p>
-      ) : null}
-
       {error ? <SyncError message={error} compact /> : null}
 
       <div className="mt-4 grid gap-3">
-        {attachments.map((attachment, idx) => (
+        {attachments.map((attachment, index) => (
           <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
             <button
               type="button"
-              onClick={() => onOpenLightbox(attachments, idx)}
-              className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
+              onClick={() => onView(index)}
+              className="block aspect-video bg-slate-900 w-full cursor-zoom-in group relative overflow-hidden"
+              title="Click to view full screen"
             >
-              {attachment.type.startsWith("image/") ? (
-                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
-              ) : (
-                <video src={attachment.dataUrl} className="h-full w-full object-cover" />
-              )}
-              <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
-                <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
-                  Click to view fullscreen
+              <AttachmentThumb attachment={attachment} loadAttachmentData={loadAttachmentData} />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center opacity-0 group-hover:opacity-100">
+                <span className="text-white text-xs font-medium bg-black/60 px-3 py-1.5 rounded-full backdrop-blur-sm">
+                  🔍 View full screen
                 </span>
-              </span>
+              </div>
             </button>
             <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
-                <p className="text-xs text-slate-500">{formatBytes(attachment.size)}</p>
+                <p className="text-xs text-slate-500">
+                  {formatBytes(attachment.size)}
+                  {(attachment.chunks && attachment.chunks.length > 0) || attachment.remotePath ? (
+                    <span className="ml-2 text-emerald-400/60">
+                      • Synced{attachment.chunks && attachment.chunks.length > 1 ? ` (${attachment.chunks.length} chunks)` : ""}
+                    </span>
+                  ) : attachment.dataUrl ? (
+                    <span className="ml-2 text-amber-400/60">• Pending upload</span>
+                  ) : null}
+                </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <a
-                  href={attachment.dataUrl}
-                  download={attachment.name}
-                  className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100"
-                  onClick={(e) => e.stopPropagation()}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleDownload(attachment)}
+                  className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100"
+                  title="Download file"
                 >
-                  Download
-                </a>
+                  ⬇ Download
+                </button>
                 <button
                   type="button"
                   onClick={() => onChange(attachments.filter((item) => item.id !== attachment.id))}
-                  className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
+                  className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100"
+                  title="Remove from entry"
                 >
-                  Remove
+                  ✕ Remove
                 </button>
               </div>
             </div>
@@ -1553,6 +1626,267 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
     </section>
   );
 }
+
+// ============================================================================
+// Media Lightbox / Viewer
+// ============================================================================
+
+function MediaLightbox({
+  attachments,
+  initialIndex,
+  onClose,
+  loadAttachmentData,
+  onRemove,
+}: {
+  attachments: Attachment[];
+  initialIndex: number;
+  onClose: () => void;
+  loadAttachmentData: (att: Attachment, onProgress?: (msg: string) => void) => Promise<string>;
+  onRemove: (id: string) => void;
+}) {
+  const [index, setIndex] = useState(initialIndex);
+  const [currentUrl, setCurrentUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+  const touchStartX = useRef<number | null>(null);
+  const touchStartY = useRef<number | null>(null);
+
+  const current = attachments[index];
+  const hasPrev = index > 0;
+  const hasNext = index < attachments.length - 1;
+
+  const goPrev = useCallback(() => {
+    if (hasPrev) {
+      setIndex(i => i - 1);
+    }
+  }, [hasPrev]);
+
+  const goNext = useCallback(() => {
+    if (hasNext) {
+      setIndex(i => i + 1);
+    }
+  }, [hasNext]);
+
+  // Load current attachment data
+  useEffect(() => {
+    if (!current) return;
+    setError(null);
+    setCurrentUrl(null);
+
+    if (current.dataUrl) {
+      setCurrentUrl(current.dataUrl);
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadProgress("Connecting to GitHub...");
+    loadAttachmentData(current, (msg) => setLoadProgress(msg))
+      .then(url => setCurrentUrl(url))
+      .catch(err => setError(getErrorMessage(err)))
+      .finally(() => { setIsLoading(false); setLoadProgress(""); });
+  }, [current, loadAttachmentData]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "ArrowRight") goNext();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [goPrev, goNext, onClose]);
+
+  // Lock body scroll
+  useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = originalOverflow; };
+  }, []);
+
+  function handleTouchStart(e: React.TouchEvent) {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  }
+
+  function handleTouchEnd(e: React.TouchEvent) {
+    if (touchStartX.current === null || touchStartY.current === null) return;
+    const endX = e.changedTouches[0].clientX;
+    const endY = e.changedTouches[0].clientY;
+    const dx = endX - touchStartX.current;
+    const dy = endY - touchStartY.current;
+
+    // Only treat as horizontal swipe if mostly horizontal
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if (dx > 0) goPrev();
+      else goNext();
+    }
+    touchStartX.current = null;
+    touchStartY.current = null;
+  }
+
+  async function handleDownload() {
+    if (!current) return;
+    try {
+      const url = currentUrl ?? await loadAttachmentData(current);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = current.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
+  function handleRemove() {
+    if (!current) return;
+    const confirmed = window.confirm(`Remove "${current.name}" from this entry?`);
+    if (!confirmed) return;
+    onRemove(current.id);
+  }
+
+  if (!current) {
+    onClose();
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex flex-col animate-fade-in"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Top bar */}
+      <div className="flex items-center justify-between p-3 sm:p-4 bg-gradient-to-b from-black/70 to-transparent z-10">
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur text-white text-sm font-medium transition"
+          title="Close (Esc)"
+        >
+          <span className="text-lg leading-none">←</span> Back
+        </button>
+
+        <div className="text-white text-sm font-medium hidden sm:block">
+          <span className="opacity-70">{index + 1} / {attachments.length}</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 backdrop-blur text-cyan-100 text-sm font-medium transition"
+            title="Download"
+          >
+            <span>⬇</span><span className="hidden sm:inline">Download</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleRemove}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 backdrop-blur text-rose-100 text-sm font-medium transition"
+            title="Remove"
+          >
+            <span>✕</span><span className="hidden sm:inline">Remove</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Media display area */}
+      <div className="flex-1 flex items-center justify-center relative overflow-hidden p-2 sm:p-6">
+        {/* Prev button */}
+        {hasPrev && (
+          <button
+            type="button"
+            onClick={goPrev}
+            className="absolute left-2 sm:left-6 top-1/2 -translate-y-1/2 z-20 h-12 w-12 sm:h-14 sm:w-14 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl border border-white/20 text-white text-2xl flex items-center justify-center transition shadow-2xl"
+            title="Previous (←)"
+            aria-label="Previous"
+          >
+            ‹
+          </button>
+        )}
+
+        {/* Next button */}
+        {hasNext && (
+          <button
+            type="button"
+            onClick={goNext}
+            className="absolute right-2 sm:right-6 top-1/2 -translate-y-1/2 z-20 h-12 w-12 sm:h-14 sm:w-14 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl border border-white/20 text-white text-2xl flex items-center justify-center transition shadow-2xl"
+            title="Next (→)"
+            aria-label="Next"
+          >
+            ›
+          </button>
+        )}
+
+        {/* Media content */}
+        <div className="w-full h-full flex items-center justify-center">
+          {isLoading && (
+            <div className="flex flex-col items-center gap-4 text-white">
+              <div className="h-12 w-12 border-2 border-cyan-300/30 border-t-cyan-300 rounded-full animate-spin" />
+              <p className="text-sm text-slate-300">Downloading & decrypting from GitHub...</p>
+              {loadProgress && <p className="text-xs text-cyan-300/80 font-mono">{loadProgress}</p>}
+              <p className="text-xs text-slate-500">{current.name} • {formatBytes(current.size)}</p>
+            </div>
+          )}
+          {error && (
+            <div className="text-center text-rose-300 max-w-md px-4">
+              <p className="text-lg font-semibold mb-2">Failed to load attachment</p>
+              <p className="text-sm text-rose-300/80">{error}</p>
+            </div>
+          )}
+          {!isLoading && !error && currentUrl && (
+            current.type.startsWith("image/") ? (
+              <img
+                src={currentUrl}
+                alt={current.name}
+                className="max-h-full max-w-full object-contain select-none"
+                draggable={false}
+              />
+            ) : current.type.startsWith("video/") ? (
+              <video
+                src={currentUrl}
+                className="max-h-full max-w-full"
+                controls
+                autoPlay
+              />
+            ) : (
+              <div className="text-white text-center">
+                <p>Cannot preview this file type</p>
+                <p className="text-sm text-slate-400 mt-2">{current.type}</p>
+              </div>
+            )
+          )}
+        </div>
+      </div>
+
+      {/* Bottom info bar */}
+      <div className="p-3 sm:p-4 bg-gradient-to-t from-black/70 to-transparent">
+        <div className="flex items-center justify-between text-white">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium truncate">{current.name}</p>
+            <p className="text-xs text-slate-400">{formatBytes(current.size)} • {current.type}</p>
+          </div>
+          <div className="text-xs text-slate-400 sm:hidden ml-3">
+            {index + 1} / {attachments.length}
+          </div>
+        </div>
+        {attachments.length > 1 && (
+          <p className="text-xs text-center text-slate-500 mt-2 hidden sm:block">
+            Use ← → arrow keys or swipe to navigate
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Year Pixels View
+// ============================================================================
 
 function YearPixelsView({
   year,
@@ -1577,24 +1911,14 @@ function YearPixelsView({
           <div className="space-y-3">
             <p className="text-sm uppercase tracking-[0.5em] text-fuchsia-200/50">Year in pixels</p>
             <h1 className="text-6xl font-semibold tracking-[-0.08em] text-white sm:text-8xl">{year}</h1>
-            <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.
-            </p>
+            <p className="max-w-2xl text-sm leading-6 text-slate-400">Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={onBack} className="round-button">
-              Back
-            </button>
-            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">
-              Prev year
-            </button>
-            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">
-              This year
-            </button>
-            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">
-              Next year
-            </button>
+            <button type="button" onClick={onBack} className="round-button">Back</button>
+            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">Prev year</button>
+            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">This year</button>
+            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">Next year</button>
           </div>
         </div>
 
@@ -1659,9 +1983,10 @@ function MonthPixelPanel({
   );
 }
 
-/* ==========================================================================
-   AI INTELLIGENCE VIEW: SEMANTIC SEARCH WITH CLICKABLE DATES
-   ========================================================================== */
+// ============================================================================
+// AI Intelligence View
+// ============================================================================
+
 function AIIntelligenceView({
   entries,
   initialTagFilter,
@@ -1673,8 +1998,6 @@ function AIIntelligenceView({
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
-  
-  // States for AI response with clickable dates
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
 
@@ -1694,16 +2017,11 @@ function AIIntelligenceView({
   const expandedTerms = useMemo(() => {
     const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (queries.length === 0) return [];
-    
     const terms = [...queries];
     queries.forEach(q => {
-      if (SEMANTIC_DICTIONARY[q]) {
-        terms.push(...SEMANTIC_DICTIONARY[q]);
-      }
+      if (SEMANTIC_DICTIONARY[q]) terms.push(...SEMANTIC_DICTIONARY[q]);
       Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
-        if (synonyms.includes(q) && !terms.includes(key)) {
-          terms.push(key);
-        }
+        if (synonyms.includes(q) && !terms.includes(key)) terms.push(key);
       });
     });
     return Array.from(new Set(terms));
@@ -1721,12 +2039,7 @@ function AIIntelligenceView({
       }
 
       if (expandedTerms.length > 0) {
-        return expandedTerms.some(
-          (term) =>
-            bodyClean.includes(term) ||
-            titleClean.includes(term) ||
-            dateString.includes(term)
-        );
+        return expandedTerms.some(term => bodyClean.includes(term) || titleClean.includes(term) || dateString.includes(term));
       }
       return true;
     }).sort((a, b) => b.date.localeCompare(a.date));
@@ -1734,26 +2047,22 @@ function AIIntelligenceView({
 
   const emotionalDistribution = useMemo(() => {
     const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0 };
-    entries.forEach((e) => {
-      if (tallies[e.mood] !== undefined) tallies[e.mood]++;
-    });
+    entries.forEach((e) => { if (tallies[e.mood] !== undefined) tallies[e.mood]++; });
     return tallies;
   }, [entries]);
 
   const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
 
-  // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
   async function handleAISubmit(e: FormEvent) {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-
     setIsSearchingAI(true);
     setAiAnswer("Thinking through your timeline memory...");
     try {
       const response = await smartAISearch(searchQuery, entries);
       setAiAnswer(response);
     } catch (err) {
-      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
+      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured.");
     } finally {
       setIsSearchingAI(false);
     }
@@ -1762,62 +2071,39 @@ function AIIntelligenceView({
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
-        
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
-          <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively. Dates in AI responses are clickable!
-          </p>
+          <p className="text-sm text-slate-400 max-w-2xl">Type natural questions or timeline queries. Hit the <strong>Ask AI Brain</strong> button. Dates in AI responses are clickable!</p>
         </div>
 
-        {/* Input box form element overlay wrapper */}
         <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
           <span className="text-xl text-slate-500">🔍</span>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
-          />
+          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder='Try "When did I go to the beach?" or "entries mentioning Alex"...' className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2" />
           {searchQuery && (
-            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">
-              Clear
-            </button>
+            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">Clear</button>
           )}
-          <button
-            type="submit"
-            disabled={isSearchingAI || !searchQuery.trim()}
-            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40"
-          >
+          <button type="submit" disabled={isSearchingAI || !searchQuery.trim()} className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-medium text-xs hover:opacity-90 transition shrink-0 disabled:opacity-40">
             {isSearchingAI ? "Thinking..." : "Ask AI Brain"}
           </button>
         </form>
 
-        {/* Dynamic expansion status indicators */}
         {expandedTerms.length > 0 && (
           <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
             <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
             {expandedTerms.map((t) => (
-              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
-                {t}
-              </span>
+              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">{t}</span>
             ))}
           </div>
         )}
 
-        {/* Selected tag constraint badge overlay */}
         {activeTag && (
           <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
             <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
-            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
-              Remove Filter
-            </button>
+            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">Remove Filter</button>
           </div>
         )}
 
-        {/* REASONED AI RESPONSE BLOCK: Renders summary card with CLICKABLE DATES */}
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2 flex items-center gap-2">
@@ -1830,11 +2116,10 @@ function AIIntelligenceView({
           </div>
         )}
 
-        {/* Filter Output List Area */}
         <div className="space-y-3">
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
             <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
-            <span className="text-xs text-slate-600">Click entry row to jump instantly to document layout editor</span>
+            <span className="text-xs text-slate-600">Click entry to open editor</span>
           </div>
 
           {filteredEntries.length > 0 ? (
@@ -1842,30 +2127,16 @@ function AIIntelligenceView({
               {filteredEntries.map((item) => {
                 const option = MOOD_BY_ID[item.mood];
                 return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onJumpToEntry(item.date)}
-                    className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group"
-                  >
+                  <button key={item.id} type="button" onClick={() => onJumpToEntry(item.date)} className="w-full text-left flex items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-cyan-400/30 transition duration-200 group">
                     <div className="min-w-0 space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">
-                          {item.date}
-                        </span>
-                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">
-                          {item.title}
-                        </h4>
+                        <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">{item.date}</span>
+                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">{item.title}</h4>
                       </div>
-                      <p className="text-xs text-slate-400 truncate max-w-xl">
-                        {htmlToText(item.bodyHtml)}
-                      </p>
+                      <p className="text-xs text-slate-400 truncate max-w-xl">{htmlToText(item.bodyHtml)}</p>
                     </div>
-                    
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-slate-500 hidden sm:inline">
-                        {detectSentimentLabel(item.bodyHtml)}
-                      </span>
+                      <span className="text-xs text-slate-500 hidden sm:inline">{detectSentimentLabel(item.bodyHtml)}</span>
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
                     </div>
                   </button>
@@ -1874,7 +2145,7 @@ function AIIntelligenceView({
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
-              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
+              No entries found. Try revising your query or remove active filters.
             </div>
           )}
         </div>
@@ -1884,7 +2155,7 @@ function AIIntelligenceView({
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
-            <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated textual weight scores.</p>
+            <p className="text-xs text-slate-400 mt-1">Cross-analyzing manual entries with automated weight scores.</p>
           </div>
 
           <div className="space-y-3 pt-2">
@@ -1901,14 +2172,7 @@ function AIIntelligenceView({
                     <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
                   </div>
                   <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${normalizedPct}%`,
-                        backgroundColor: m.color,
-                        boxShadow: `0 0 10px ${m.glow}`,
-                      }}
-                    />
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${normalizedPct}%`, backgroundColor: m.color, boxShadow: `0 0 10px ${m.glow}` }} />
                   </div>
                 </div>
               );
@@ -1919,29 +2183,22 @@ function AIIntelligenceView({
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
-            <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
+            <p className="text-xs text-slate-400 mt-1">Click a keyword to filter entries by that topic.</p>
           </div>
 
           {globalTopicCloud.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 pt-2">
               {globalTopicCloud.map((tag) => (
-                <button
-                  key={tag.text}
-                  type="button"
-                  onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
-                    activeTag === tag.text
-                      ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
-                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
-                  )}
-                >
+                <button key={tag.text} type="button" onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)} className={cn(
+                  "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
+                  activeTag === tag.text ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow" : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
+                )}>
                   #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
                 </button>
               ))}
             </div>
           ) : (
-            <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
+            <p className="text-xs text-slate-500 italic">Not enough entries yet to build a topic cloud.</p>
           )}
         </section>
 
@@ -1950,6 +2207,10 @@ function AIIntelligenceView({
     </div>
   );
 }
+
+// ============================================================================
+// Mood Legend & Helpers
+// ============================================================================
 
 function MoodLegend() {
   return (
@@ -1989,12 +2250,10 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function SyncError({ message, compact }: { message: string; compact?: boolean }) {
   return (
-    <div
-      className={cn(
-        "rounded-2xl border border-rose-300/20 bg-rose-500/10 text-sm leading-6 text-rose-100 shadow-2xl shadow-rose-950/20 backdrop-blur-xl",
-        compact ? "mt-4 px-4 py-3" : "mb-5 px-5 py-4",
-      )}
-    >
+    <div className={cn(
+      "rounded-2xl border border-rose-300/20 bg-rose-500/10 text-sm leading-6 text-rose-100 shadow-2xl shadow-rose-950/20 backdrop-blur-xl",
+      compact ? "mt-4 px-4 py-3" : "mb-5 px-5 py-4",
+    )}>
       {message}
     </div>
   );
@@ -2012,12 +2271,12 @@ function AmbientBackdrop() {
   );
 }
 
+// ============================================================================
+// Vault & Storage Helpers
+// ============================================================================
+
 function createEmptyVault(): VaultData {
-  return {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    entries: [],
-  };
+  return { version: 1, updatedAt: new Date().toISOString(), entries: [] };
 }
 
 function loadStoredConfig(): GitHubConfig | null {
@@ -2040,14 +2299,87 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
   };
 }
 
+// Get directory for attachments (sibling to vault file)
+function getAttachmentsDir(config: GitHubConfig): string {
+  const vaultDir = config.path.includes("/") ? config.path.substring(0, config.path.lastIndexOf("/")) : "";
+  return vaultDir ? `${vaultDir}/${ATTACHMENTS_SUBDIR}` : ATTACHMENTS_SUBDIR;
+}
+
+// Path for a chunked attachment file: e.g. "data/moonlit-attachments/<id>-c0.json"
+function getAttachmentChunkPath(config: GitHubConfig, attachmentId: string, chunkIndex: number): string {
+  return `${getAttachmentsDir(config)}/${attachmentId}-c${chunkIndex}.json`;
+}
+
+// Split a string into chunks of given byte size (UTF-16 chars in JS strings; dataURLs are ASCII so 1 char = 1 byte)
+function chunkString(str: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < str.length; i += chunkSize) {
+    chunks.push(str.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+// Delete all files belonging to an attachment (both chunked and legacy formats)
+async function deleteAttachmentFiles(config: GitHubConfig, att: Attachment): Promise<void> {
+  // Delete chunks (new format)
+  if (att.chunks && att.chunks.length > 0) {
+    for (const chunk of att.chunks) {
+      try {
+        // Need to fetch sha if not cached (e.g. after reload sha might be stale)
+        let sha = chunk.sha;
+        if (!sha) {
+          const remote = await fetchGitHubFile(config, chunk.path);
+          if (!remote.exists) continue;
+          sha = remote.sha ?? undefined;
+        }
+        if (sha) {
+          await deleteGitHubFile(config, chunk.path, sha, `Delete attachment chunk ${chunk.path}`);
+        }
+      } catch (e) {
+        console.warn(`Failed to delete chunk ${chunk.path}:`, e);
+      }
+    }
+  }
+  // Delete legacy single file
+  if (att.remotePath) {
+    try {
+      let sha = att.remoteSha;
+      if (!sha) {
+        const remote = await fetchGitHubFile(config, att.remotePath);
+        if (!remote.exists) return;
+        sha = remote.sha ?? undefined;
+      }
+      if (sha) {
+        await deleteGitHubFile(config, att.remotePath, sha, `Delete attachment ${att.name}`);
+      }
+    } catch (e) {
+      console.warn(`Failed to delete legacy attachment ${att.remotePath}:`, e);
+    }
+  }
+}
+
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
+  return encryptDataAsJson(JSON.stringify(vault), passphrase, "moonlit-diary-encrypted-vault");
+}
+
+// Encrypt an attachment's data URL string for individual file storage
+async function encryptAttachmentData(dataUrl: string, passphrase: string): Promise<string> {
+  return encryptDataAsJson(dataUrl, passphrase, "moonlit-diary-encrypted-attachment");
+}
+
+async function decryptAttachmentData(file: EncryptedFile, passphrase: string): Promise<string> {
+  return decryptEncryptedFile(file, passphrase);
+}
+
+async function encryptDataAsJson(plaintext: string, passphrase: string, kind: "moonlit-diary-encrypted-vault" | "moonlit-diary-encrypted-attachment"): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveVaultKey(passphrase, salt, PBKDF2_ITERATIONS);
-  const plaintext = new TextEncoder().encode(JSON.stringify(vault));
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
-  const file: EncryptedVaultFile = {
-    kind: "moonlit-diary-encrypted-vault",
+  const plaintextBytes = new TextEncoder().encode(plaintext);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintextBytes);
+
+  const file: EncryptedFile = {
+    kind,
     version: 1,
     crypto: {
       name: "AES-GCM",
@@ -2059,30 +2391,32 @@ async function encryptVault(vault: VaultData, passphrase: string): Promise<strin
     },
     payload: bytesToBase64(new Uint8Array(encrypted)),
   };
-
-  return JSON.stringify(file, null, 2);
+  return JSON.stringify(file);
 }
 
-async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: string): Promise<VaultData> {
-  if (isEncryptedVaultFile(file)) {
-    const salt = base64ToBytes(file.crypto.salt);
-    const iv = base64ToBytes(file.crypto.iv);
-    const encrypted = base64ToBytes(file.payload);
-    const key = await deriveVaultKey(passphrase, salt, file.crypto.iterations);
-
-    try {
-      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
-      return normalizeVault(JSON.parse(new TextDecoder().decode(decrypted)) as VaultData);
-    } catch {
-      throw new Error("Could not unlock the vault. Check your passphrase.");
-    }
+async function decryptEncryptedFile(file: EncryptedFile, passphrase: string): Promise<string> {
+  const salt = base64ToBytes(file.crypto.salt);
+  const iv = base64ToBytes(file.crypto.iv);
+  const encrypted = base64ToBytes(file.payload);
+  const key = await deriveVaultKey(passphrase, salt, file.crypto.iterations);
+  try {
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    throw new Error("Could not decrypt file. Check your passphrase.");
   }
+}
 
+async function openVaultFile(file: EncryptedFile | VaultData, passphrase: string): Promise<VaultData> {
+  if (isEncryptedFile(file)) {
+    const plaintext = await decryptEncryptedFile(file, passphrase);
+    return normalizeVault(JSON.parse(plaintext) as VaultData);
+  }
   return normalizeVault(file);
 }
 
-function isEncryptedVaultFile(file: EncryptedVaultFile | VaultData): file is EncryptedVaultFile {
-  return "kind" in file && file.kind === "moonlit-diary-encrypted-vault";
+function isEncryptedFile(file: EncryptedFile | VaultData): file is EncryptedFile {
+  return "kind" in file && (file.kind === "moonlit-diary-encrypted-vault" || file.kind === "moonlit-diary-encrypted-attachment");
 }
 
 function normalizeVault(vault: VaultData): VaultData {
@@ -2105,10 +2439,12 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: 
   );
 }
 
-async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
-  const response = await fetch(gitHubContentUrl(config), {
-    headers: githubHeaders(config),
-  });
+// ============================================================================
+// GitHub API helpers - using Git Data API for large files
+// ============================================================================
+
+async function fetchGitHubFile(config: GitHubConfig, path: string): Promise<{ exists: boolean; sha: string | null; text: string }> {
+  const response = await fetch(gitHubContentUrl(config, path), { headers: githubHeaders(config) });
 
   if (response.status === 404) {
     return { exists: false, sha: null, text: "" };
@@ -2118,45 +2454,71 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
     throw new Error(await githubErrorMessage(response));
   }
 
-  const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
+  const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string; size?: number };
+
+  // For larger files, GitHub returns no `content` and we have to use download_url or git/blobs API
   if (data.content && data.encoding === "base64") {
     return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   }
 
-  if (data.download_url) {
-    const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
-    if (!rawResponse.ok) {
-      throw new Error(await githubErrorMessage(rawResponse));
+  if (data.sha) {
+    // Use Git Data API blob endpoint - supports up to ~100MB
+    const blobResponse = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/git/blobs/${data.sha}`,
+      { headers: githubHeaders(config) }
+    );
+    if (!blobResponse.ok) {
+      throw new Error(await githubErrorMessage(blobResponse));
     }
+    const blobData = await blobResponse.json() as { content?: string; encoding?: string };
+    if (blobData.content && blobData.encoding === "base64") {
+      return { exists: true, sha: data.sha, text: base64ToString(blobData.content.replace(/\s/g, "")) };
+    }
+  }
+
+  if (data.download_url) {
+    const rawResponse = await fetch(data.download_url, { headers: { Authorization: `Bearer ${config.token}` } });
+    if (!rawResponse.ok) throw new Error(await githubErrorMessage(rawResponse));
     return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
   }
 
   return { exists: true, sha: data.sha ?? null, text: "" };
 }
 
-async function putGitHubVaultFile(
+// Put a file to GitHub. For files > 1MB, uses Git Data API (blobs/trees/commits).
+async function putGitHubFile(
   config: GitHubConfig,
+  path: string,
   text: string,
   sha: string | null,
   message: string,
 ): Promise<{ sha: string | null }> {
+  const fileSizeBytes = new Blob([text]).size;
+  const useGitDataAPI = fileSizeBytes > 800 * 1024; // Use Git Data API for files over ~800KB to avoid Contents API limits
+
+  if (useGitDataAPI) {
+    return putGitHubFileViaGitData(config, path, text, message);
+  }
+
+  // Small files: use Contents API
   const body: { message: string; content: string; branch: string; sha?: string } = {
     message,
     content: stringToBase64(text),
     branch: config.branch,
   };
+  if (sha) body.sha = sha;
 
-  if (sha) {
-    body.sha = sha;
-  }
-
-  const response = await fetch(gitHubContentUrl(config), {
+  const response = await fetch(gitHubContentUrl(config, path), {
     method: "PUT",
     headers: githubHeaders(config),
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
+    // If Contents API fails for any reason, fall back to Git Data API
+    if (response.status >= 500 || response.status === 413 || response.status === 422) {
+      return putGitHubFileViaGitData(config, path, text, message);
+    }
     throw new Error(await githubErrorMessage(response));
   }
 
@@ -2164,9 +2526,106 @@ async function putGitHubVaultFile(
   return { sha: data.content?.sha ?? null };
 }
 
-function gitHubContentUrl(config: GitHubConfig) {
-  const encodedPath = config.path.split("/").map(encodeURIComponent).join("/");
-  return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}`;
+// Use Git Data API for large files (up to ~100MB per blob)
+async function putGitHubFileViaGitData(
+  config: GitHubConfig,
+  path: string,
+  text: string,
+  message: string,
+): Promise<{ sha: string | null }> {
+  const repoBase = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}`;
+  const headers = githubHeaders(config);
+
+  // Step 1: Get the current commit SHA from the branch
+  const refResponse = await fetch(`${repoBase}/git/ref/heads/${encodeURIComponent(config.branch)}`, { headers });
+  if (!refResponse.ok) throw new Error(await githubErrorMessage(refResponse));
+  const refData = await refResponse.json() as { object: { sha: string } };
+  const currentCommitSha = refData.object.sha;
+
+  // Step 2: Get the tree SHA from the commit
+  const commitResponse = await fetch(`${repoBase}/git/commits/${currentCommitSha}`, { headers });
+  if (!commitResponse.ok) throw new Error(await githubErrorMessage(commitResponse));
+  const commitData = await commitResponse.json() as { tree: { sha: string } };
+  const baseTreeSha = commitData.tree.sha;
+
+  // Step 3: Create a new blob with the file content (base64-encoded)
+  const blobResponse = await fetch(`${repoBase}/git/blobs`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      content: stringToBase64(text),
+      encoding: "base64",
+    }),
+  });
+  if (!blobResponse.ok) throw new Error(await githubErrorMessage(blobResponse));
+  const blobData = await blobResponse.json() as { sha: string };
+  const newBlobSha = blobData.sha;
+
+  // Step 4: Create a new tree with the blob
+  const treeResponse = await fetch(`${repoBase}/git/trees`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      base_tree: baseTreeSha,
+      tree: [{
+        path,
+        mode: "100644",
+        type: "blob",
+        sha: newBlobSha,
+      }],
+    }),
+  });
+  if (!treeResponse.ok) throw new Error(await githubErrorMessage(treeResponse));
+  const treeData = await treeResponse.json() as { sha: string };
+  const newTreeSha = treeData.sha;
+
+  // Step 5: Create a new commit
+  const newCommitResponse = await fetch(`${repoBase}/git/commits`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      message,
+      tree: newTreeSha,
+      parents: [currentCommitSha],
+    }),
+  });
+  if (!newCommitResponse.ok) throw new Error(await githubErrorMessage(newCommitResponse));
+  const newCommitData = await newCommitResponse.json() as { sha: string };
+  const newCommitSha = newCommitData.sha;
+
+  // Step 6: Update the branch reference
+  const updateRefResponse = await fetch(`${repoBase}/git/refs/heads/${encodeURIComponent(config.branch)}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      sha: newCommitSha,
+      force: false,
+    }),
+  });
+  if (!updateRefResponse.ok) throw new Error(await githubErrorMessage(updateRefResponse));
+
+  return { sha: newBlobSha };
+}
+
+async function deleteGitHubFile(config: GitHubConfig, path: string, sha: string, message: string): Promise<void> {
+  const response = await fetch(gitHubContentUrl(config, path), {
+    method: "DELETE",
+    headers: githubHeaders(config),
+    body: JSON.stringify({
+      message,
+      sha,
+      branch: config.branch,
+    }),
+  });
+
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await githubErrorMessage(response));
+  }
+}
+
+function gitHubContentUrl(config: GitHubConfig, path: string) {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(config.branch)}`;
 }
 
 function githubHeaders(config: GitHubConfig): HeadersInit {
@@ -2214,6 +2673,10 @@ function base64ToBytes(value: string) {
   return bytes;
 }
 
+// ============================================================================
+// Date & Utility Helpers
+// ============================================================================
+
 function dateToKey(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -2231,9 +2694,7 @@ function extractTopicsAndTags(html: string, title: string): string[] {
   const foundTags = new Set<string>();
 
   const hashMatches = combinedText.match(/#\w+/g);
-  if (hashMatches) {
-    hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
-  }
+  if (hashMatches) hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
 
   if (combinedText.includes("alex")) foundTags.add("alex");
   if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
@@ -2251,10 +2712,8 @@ function detectSentimentLabel(html: string): string {
 
   let positiveScore = 0;
   let heavyScore = 0;
-
   const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
   const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
-
   positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
   heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
 
@@ -2359,12 +2818,11 @@ function formatBytes(bytes: number) {
 function filesToAttachments(files: FileList, onProgress?: (progress: string) => void): Promise<Attachment[]> {
   const fileArray = Array.from(files);
   const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
-  
-  // For large files, show progress
+
   if (totalSize > 10 * 1024 * 1024 && onProgress) {
     onProgress(`Loading ${fileArray.length} file(s)...`);
   }
-  
+
   return Promise.all(
     fileArray.map(
       (file) =>
@@ -2373,14 +2831,12 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
             reject(new Error(`${file.name} exceeds the 500MB limit.`));
             return;
           }
-          
+
           const reader = new FileReader();
-          
-          // Show progress for individual large files
           if (file.size > 50 * 1024 * 1024 && onProgress) {
             onProgress(`Loading ${file.name} (${formatBytes(file.size)})...`);
           }
-          
+
           reader.onload = () => {
             resolve({
               id: createId(),
@@ -2395,187 +2851,6 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
           reader.readAsDataURL(file);
         }),
     ),
-  );
-}
-
-function LightboxViewer({
-  attachments,
-  currentIndex,
-  onClose,
-  onPrev,
-  onNext,
-}: {
-  attachments: Attachment[];
-  currentIndex: number;
-  onClose: () => void;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const currentAttachment = attachments[currentIndex];
-  const touchStartX = useRef<number | null>(null);
-  const touchEndX = useRef<number | null>(null);
-
-  // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft") onPrev();
-      if (e.key === "ArrowRight") onNext();
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, onPrev, onNext]);
-
-  // Cleanup body scroll lock when unmounting
-  useEffect(() => {
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, []);
-
-  function handleTouchStart(e: ReactTouchEvent) {
-    touchStartX.current = e.changedTouches[0].screenX;
-    touchEndX.current = null;
-  }
-
-  function handleTouchMove(e: ReactTouchEvent) {
-    touchEndX.current = e.changedTouches[0].screenX;
-  }
-
-  function handleTouchEnd() {
-    if (!touchStartX.current || !touchEndX.current) return;
-    const diff = touchStartX.current - touchEndX.current;
-    const minSwipeDistance = 50;
-
-    if (Math.abs(diff) > minSwipeDistance) {
-      if (diff > 0) {
-        // Swiped left -> next
-        onNext();
-      } else {
-        // Swiped right -> prev
-        onPrev();
-      }
-    }
-    touchStartX.current = null;
-    touchEndX.current = null;
-  }
-
-  function downloadCurrent() {
-    const link = document.createElement("a");
-    link.href = currentAttachment.dataUrl;
-    link.download = currentAttachment.name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }
-
-  if (!currentAttachment) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-    >
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          className="flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-2 text-white transition backdrop-blur-md"
-        >
-          <span className="text-lg leading-none">←</span>
-          <span className="text-sm font-medium">Back</span>
-        </button>
-
-        <div className="flex items-center gap-2">
-          <span className="text-white/70 text-sm font-mono bg-black/40 px-3 py-1.5 rounded-full backdrop-blur-md">
-            {currentIndex + 1} / {attachments.length}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              downloadCurrent();
-            }}
-            className="flex items-center gap-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 px-4 py-2 text-cyan-100 transition backdrop-blur-md"
-          >
-            <span className="text-sm">⬇</span>
-            <span className="text-sm font-medium">Download</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Navigation arrows */}
-      {attachments.length > 1 && (
-        <>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onPrev();
-            }}
-            className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
-            aria-label="Previous"
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNext();
-            }}
-            className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
-            aria-label="Next"
-          >
-            ›
-          </button>
-        </>
-      )}
-
-      {/* Filename at bottom */}
-      <div className="absolute bottom-4 left-0 right-0 z-10 text-center px-4">
-        <p className="text-white/80 text-sm truncate max-w-2xl mx-auto bg-black/50 inline-block px-4 py-2 rounded-full backdrop-blur-md">
-          {currentAttachment.name} <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
-        </p>
-      </div>
-
-      {/* Media content */}
-      <div
-        className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {currentAttachment.type.startsWith("image/") ? (
-          <img
-            src={currentAttachment.dataUrl}
-            alt={currentAttachment.name}
-            className="max-w-full max-h-[80vh] object-contain select-none"
-            draggable={false}
-          />
-        ) : currentAttachment.type.startsWith("video/") ? (
-          <video
-            src={currentAttachment.dataUrl}
-            controls
-            autoPlay
-            className="max-w-full max-h-[80vh] object-contain"
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <div className="p-8 text-white/80 bg-white/10 rounded-2xl">
-            <p className="text-center">Preview not available for this file type.</p>
-            <p className="text-center text-sm mt-2 text-white/50">Use download button to save.</p>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 

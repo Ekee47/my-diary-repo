@@ -45,41 +45,91 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
     return "AI Error: VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.";
   }
 
-  const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
+  const cleanText = (html: string) =>
+ html
+ .replace(/<style[\s\S]*?<\/style>/gi, " ")
+ .replace(/<script[\s\S]*?<\/script>/gi, " ")
+ .replace(/<\/?[^>]+(>|$)/g, " ")
+ .replace(/&nbsp;/g, " ")
+ .replace(/\s+/g, " ")
+ .trim();
 
-  const formattedContext = entries
-    .map((e) => `[Date: ${e.date} | Title: ${e.title}]\nEntry text: ${cleanText(e.bodyHtml)}`)
-    .join("\n\n---\n\n");
+function ordinalSuffix(day: number) {
+ const mod100 = day % 100;
+ if (mod100 >= 11 && mod100 <= 13) return "th";
+ if (day % 10 === 1) return "st";
+ if (day % 10 === 2) return "nd";
+ if (day % 10 === 3) return "rd";
+ return "th";
+}
 
-  const prompt = `
-User Query: "${query}"
+function isoToReadableDate(iso: string) {
+ const months = [
+ "january", "february", "march", "april", "may", "june",
+ "july", "august", "september", "october", "november", "december"
+ ];
 
-Below is the complete decrypted history of the user's journal entries.
+ const [yearRaw, monthRaw, dayRaw] = iso.split("-");
+ const year = Number(yearRaw);
+ const month = Number(monthRaw);
+ const day = Number(dayRaw);
 
-IMPORTANT:
-- You must answer ONLY using facts from these entries.
+ if (!year || !month || !day || month < 1 || month > 12) return iso;
+
+ return `${day}${ordinalSuffix(day)} ${months[month - 1]} ${year}`;
+}
+
+const sortedEntries = entries.slice().sort((a, b) => a.date.localeCompare(b.date));
+
+const allowedDateList = sortedEntries
+ .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
+ .join("\n");
+
+const formattedContext = sortedEntries
+ .map(
+ (e) => `
+ENTRY_DATE_ISO: ${e.date}
+CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
+TITLE: ${e.title}
+ENTRY_TEXT:
+${cleanText(e.bodyHtml)}
+`
+ )
+ .join("\n\n--- ENTRY BREAK ---\n\n");
+
+const prompt = `
+User Query:
+"${query}"
+
+You are searching the user's saved diary entries.
+
+CRITICAL RULES:
+- Answer ONLY using the saved entries below.
 - Never invent dates, events, or details.
-- If the user asks "when", return only the exact matching date from the relevant entry.
-- If multiple entries match, choose the most exact one based on event context.
-- If no exact answer exists, say clearly that no matching entry was found.
-- Understand Hinglish, Roman Hindi, slang, abbreviations, and semantic equivalents.
-  Examples:
-  - "samundar", "beach", "sea", "ocean" can refer to the same theme
-  - "dost", "friend", "buddy", "yaar" can refer to a friend
-  - "kaam", "office", "project", "work" can refer to work
-- Do not guess a date from vague emotional similarity alone.
-- Only mention a date if that exact event or topic is truly present in an entry.
+- You may ONLY mention dates from this allowed list:
+${allowedDateList}
 
-DATE RULE:
-Whenever you mention a journal date, format it exactly like:
-[1st july 2026], [2nd august 2025], [23rd june 2026]
+DATE OUTPUT RULE:
+- Whenever you mention a date, copy the exact CLICKABLE_DATE format from the entry.
+- Example: [1st july 2026]
+- Do NOT output fake dates.
+- Do NOT use a date unless the matching entry clearly supports the answer.
 
-If there is no exact answer, reply naturally without any fake date.
+LANGUAGE UNDERSTANDING:
+- Understand English, Hinglish, Roman Hindi, slang, abbreviations.
+- Examples:
+  - "samundar", "beach", "sea", "ocean" can be related.
+  - "dost", "friend", "yaar" can be related.
+  - "kaam", "office", "project", "work" can be related.
+  - "clg", "college", "padhai", "study" can be related.
 
-JOURNAL ENTRIES:
+ANSWER STYLE:
+- If one exact entry matches, give one direct answer with its clickable date.
+- If multiple entries truly match, list up to 3 strongest matches.
+- If no exact match exists, say: "I couldn’t find that in your saved entries."
+
+SAVED JOURNAL ENTRIES:
 ${formattedContext}
-
-Now answer the user accurately and conservatively.
 `;
 
   try {

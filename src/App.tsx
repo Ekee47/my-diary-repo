@@ -1267,7 +1267,10 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Photos & videos. Large videos auto-compressed. Uploaded to your media repo when you click Save.</p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            Photos & videos. Large videos auto-compressed. 
+            <span className="block text-amber-300/70 mt-1">Note: GitHub uploads 50MB in ~1-3 minutes. Click Save and leave — it uploads in background.</span>
+          </p>
         </div>
         <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
           {isLoading ? "Processing..." : "Add"}
@@ -1282,9 +1285,10 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: {
         {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
       </div>
 
-      {totalBytes > 100 * 1024 * 1024 && (
+      {totalBytes > 50 * 1024 * 1024 && (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          ⚠️ Total is {formatBytes(totalBytes)}. Large uploads may take time on slow connections, but vault saves remain fast.
+          ⚠️ <strong>Large files:</strong> {formatBytes(totalBytes)} will upload to GitHub in the background after you click Save. 
+          <span className="block mt-1 text-amber-200/70">GitHub API is slow (~1-3 min for 50MB). You can leave this screen immediately — upload continues in background.</span>
         </p>
       )}
 

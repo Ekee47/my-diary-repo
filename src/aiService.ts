@@ -54,10 +54,32 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   const prompt = `
 User Query: "${query}"
 
-Below is the complete encrypted history of decrypted journal entries for context:
+Below is the complete decrypted history of the user's journal entries.
+
+IMPORTANT:
+- You must answer ONLY using facts from these entries.
+- Never invent dates, events, or details.
+- If the user asks "when", return only the exact matching date from the relevant entry.
+- If multiple entries match, choose the most exact one based on event context.
+- If no exact answer exists, say clearly that no matching entry was found.
+- Understand Hinglish, Roman Hindi, slang, abbreviations, and semantic equivalents.
+  Examples:
+  - "samundar", "beach", "sea", "ocean" can refer to the same theme
+  - "dost", "friend", "buddy", "yaar" can refer to a friend
+  - "kaam", "office", "project", "work" can refer to work
+- Do not guess a date from vague emotional similarity alone.
+- Only mention a date if that exact event or topic is truly present in an entry.
+
+DATE RULE:
+Whenever you mention a journal date, format it exactly like:
+[1st july 2026], [2nd august 2025], [23rd june 2026]
+
+If there is no exact answer, reply naturally without any fake date.
+
+JOURNAL ENTRIES:
 ${formattedContext}
 
-Based on the rules, deduce the exact answer to the user's query.
+Now answer the user accurately and conservatively.
 `;
 
   try {
@@ -73,7 +95,7 @@ Based on the rules, deduce the exact answer to the user's query.
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt }
         ],
-        temperature: 0.2,
+        temperature: 0.1,
       }),
     });
 

@@ -174,53 +174,58 @@ function parseReadableDateToISO(readableDate: string): string | null {
 /**
  * Renders AI response text, turning readable date strings into clickable system buttons
  */
-export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIResponseRendererProps & { allowedDates?: Set<string> }) {
-  // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
-  const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
-  
+export function AIResponseRenderer({
+  text,
+  onDateClick,
+  allowedDates,
+}: AIResponseRendererProps & { allowedDates?: Set<string> }) {
+  // Supports both:
+  // [1st july 2026]
+  // 1st july 2026
+  const dateRegex = /\[?(\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+\s+\d{4})\]?/gi;
+
   const parts: ReactNode[] = [];
   let lastIndex = 0;
-  let match;
+  let match: RegExpExecArray | null;
   let keyIndex = 0;
 
   while ((match = dateRegex.exec(text)) !== null) {
-    // Add text before the match
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex, match.index)}</span>);
     }
-    
-    const rawReadableDate = match[0];
-    const isoDate = parseReadableDateToISO(rawReadableDate);
-    
+
+    const fullMatch = match[0];
+    const readableDate = match[1];
+    const isoDate = parseReadableDateToISO(readableDate);
+
     if (isoDate && (!allowedDates || allowedDates.has(isoDate))) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
           onClick={() => onDateClick(isoDate)}
-          className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors cursor-pointer"
+          className="inline font-bold text-cyan-400 hover:text-cyan-300 hover:underline transition-colors cursor-pointer"
           style={{
-            background: 'none',
-            border: 'none',
+            background: "none",
+            border: "none",
             padding: 0,
-            font: 'inherit',
-            color: '#22d3ee',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            textDecoration: 'underline'
+            font: "inherit",
+            color: "#22d3ee",
+            fontWeight: "bold",
+            cursor: "pointer",
+            textDecoration: "underline",
           }}
           title={`Click to open entry for ${isoDate}`}
         >
-          {rawReadableDate}
+          {fullMatch}
         </button>
       );
     } else {
-      parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
+      parts.push(<span key={`date-${keyIndex++}`}>{fullMatch}</span>);
     }
-    
-    lastIndex = match.index + match[0].length;
+
+    lastIndex = match.index + fullMatch.length;
   }
 
-  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex)}</span>);
   }
@@ -2071,51 +2076,79 @@ function MoodPieChart({
   moods: MoodOption[];
   distribution: Record<MoodId, number>;
 }) {
-  const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
-  const normalized = total || 1;
+  const activeMoods = moods.filter((m) => (distribution[m.id] || 0) > 0);
+  const total = activeMoods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
 
+  if (total === 0) {
+    return (
+      <div className="relative flex h-[150px] w-[150px] flex-shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] shadow-[0_0_40px_rgba(34,211,238,0.08)]">
+        <div className="text-center">
+          <div className="text-2xl font-semibold text-white">0</div>
+          <div className="text-[11px] text-slate-400">entries</div>
+        </div>
+      </div>
+    );
+  }
+
+  const size = 150;
+  const center = size / 2;
+  const radius = 48;
+  const stroke = 14;
+  const circumference = 2 * Math.PI * radius;
   let cumulative = 0;
-  const radius = 44;
-  const stroke = 12;
 
   return (
     <div className="relative flex-shrink-0">
-      <div className="relative">
-        <svg width={120} height={120} viewBox="0 0 120 120" className="drop-shadow">
-          <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
-          {moods.map((m) => {
-            const value = distribution[m.id] || 0;
-            const fraction = value / normalized;
-            const dash = 2 * Math.PI * radius;
-            const seg = dash * fraction;
-            const offset = dash * (1 - cumulative);
-            cumulative += fraction;
+      <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.12),transparent_65%)] blur-2xl" />
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="relative drop-shadow-[0_0_24px_rgba(34,211,238,0.08)]"
+      >
+        <circle
+          cx={center}
+          cy={center}
+          r={radius}
+          stroke="rgba(255,255,255,0.08)"
+          strokeWidth={stroke}
+          fill="none"
+        />
 
-            return (
-              <circle
-                key={m.id}
-                cx="60"
-                cy="60"
-                r={radius}
-                stroke={m.color}
-                strokeWidth={stroke}
-                strokeLinecap="round"
-                fill="none"
-                strokeDasharray={`${seg} ${dash - seg}`}
-                strokeDashoffset={offset}
-                transform="rotate(-90 60 60)"
-                style={{
-                  filter: `drop-shadow(0 0 10px ${m.glow})`,
-                }}
-              />
-            );
-          })}
-        </svg>
+        {activeMoods.map((m) => {
+          const value = distribution[m.id] || 0;
+          const fraction = value / total;
+          const segment = circumference * fraction;
+          const visibleSegment = Math.max(segment - 3, 0); // tiny gap between arcs
+          const offset = circumference * (1 - cumulative);
 
-        <div className="absolute inset-0 flex items-center justify-center flex-col text-center">
-          <div className="text-[10px] uppercase tracking-widest text-cyan-100/50">mood mix</div>
-          <div className="text-lg font-semibold text-white">{total}</div>
-          <div className="text-[10px] text-slate-400">entries</div>
+          cumulative += fraction;
+
+          return (
+            <circle
+              key={m.id}
+              cx={center}
+              cy={center}
+              r={radius}
+              stroke={m.color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              fill="none"
+              strokeDasharray={`${visibleSegment} ${circumference - visibleSegment}`}
+              strokeDashoffset={offset}
+              transform={`rotate(-90 ${center} ${center})`}
+              style={{
+                filter: `drop-shadow(0 0 10px ${m.glow})`,
+              }}
+            />
+          );
+        })}
+      </svg>
+
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="flex h-[78px] w-[78px] flex-col items-center justify-center rounded-full border border-white/10 bg-[#081019]/92 shadow-[inset_0_1px_10px_rgba(255,255,255,0.04),0_0_18px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+          <div className="text-2xl font-semibold text-white">{total}</div>
+          <div className="text-[11px] text-slate-400">entries</div>
         </div>
       </div>
     </div>

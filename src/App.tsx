@@ -14,19 +14,22 @@ type MoodOption = {
   description: string;
 };
 
-// Attachment: either local draft (dataUrl) or persisted in media repo (url + path)
+// Attachment: either local (held as File object + object URL for preview) or persisted in media repo
 type Attachment = {
   id: string;
   name: string;
   type: string;
   size: number;
   addedAt: string;
-  // New unsaved attachment (only in browser/local draft):
+  // NEW unsaved attachment - raw File kept in memory for fast upload, objectUrl for preview:
+  file?: File;             // Raw File object (not serializable, lost on page reload)
+  objectUrl?: string;      // URL.createObjectURL(file) - instant preview, revoked on cleanup
+  // Fallback for old entries that stored base64 dataUrl:
   dataUrl?: string;
   // Saved to GitHub media repo:
-  mediaUrl?: string;       // Direct load URL (raw GitHub URL)
-  mediaPath?: string;      // API path for fetching with token
-  mediaSha?: string;       // Blob SHA for updates/deletes
+  mediaUrl?: string;       // Direct load URL (raw GitHub URL or download_url)
+  mediaPath?: string;      // API path within repo
+  mediaSha?: string;       // Blob SHA for updates
 };
 
 type DiaryEntry = {
@@ -327,13 +330,17 @@ export default function App() {
   }
 
   async function resolveMediaUrl(att: Attachment): Promise<string> {
+    // Instant sources — no network needed
+    if (att.objectUrl) return att.objectUrl;
     if (att.dataUrl) return att.dataUrl;
     if (att.mediaUrl) return att.mediaUrl;
-    if (!att.mediaPath || !config) throw new Error("Attachment has no media path");
+    if (!att.mediaPath || !config) throw new Error("Attachment has no media path or local source");
 
+    // Check our blob URL cache
     const cached = mediaCacheRef.current.get(att.id);
     if (cached) return cached;
 
+    // Fetch from GitHub API and create a blob URL
     const response = await fetch(mediaApiUrl(config, att.mediaPath), {
       headers: githubHeaders(config),
     });
@@ -350,13 +357,14 @@ export default function App() {
   }
 
   function getCachedMediaUrl(att: Attachment): string | null {
+    if (att.objectUrl) return att.objectUrl;
     if (att.dataUrl) return att.dataUrl;
     if (att.mediaUrl) return att.mediaUrl;
     return mediaCacheRef.current.get(att.id) ?? null;
   }
 
   async function uploadAttachmentToMediaRepo(
-    fileDataUrl: string,
+    fileOrDataUrl: File | string,  // File object (fast) or fallback dataUrl string (legacy)
     dateKey: string,
     attId: string,
     attName: string,
@@ -365,8 +373,17 @@ export default function App() {
   ): Promise<{ mediaUrl: string; mediaPath: string; mediaSha: string | null }> {
     const m = getMediaConfig(config);
     const safeName = attName.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    // Base64 content is already in dataUrl after comma
-    const base64Content = fileDataUrl.split(",")[1];
+
+    // Get base64 content - fast path uses ArrayBuffer directly, no FileReader needed
+    let base64Content: string;
+    if (fileOrDataUrl instanceof File) {
+      const buffer = await fileOrDataUrl.arrayBuffer();
+      base64Content = arrayBufferToBase64(buffer);
+    } else {
+      // Legacy dataUrl fallback
+      base64Content = fileOrDataUrl.split(",")[1] ?? fileOrDataUrl;
+    }
+
     const ext = safeName.includes(".") ? "" : getExtensionFromMime(attType);
     const filePath = `${m.basePath}/${dateKey}/${attId.slice(0, 8)}_${safeName}${ext}`;
 
@@ -480,13 +497,14 @@ export default function App() {
         setSyncError("");
         if (!config) throw new Error("Vault not configured");
 
-        // Upload all new local attachments (those with dataUrl)
+        // Upload all new local attachments (File object preferred, dataUrl as fallback for old entries)
         const savedAttachments: Attachment[] = [];
         for (let i = 0; i < entry.attachments.length; i++) {
           const att = entry.attachments[i];
-          if (att.dataUrl) {
+          if (att.file || att.dataUrl) {
+            const uploadSource = att.file ?? att.dataUrl!;
             const uploaded = await uploadAttachmentToMediaRepo(
-              att.dataUrl,
+              uploadSource,
               entry.date,
               att.id,
               att.name,
@@ -1224,11 +1242,9 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: {
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState("");
   const totalBytes = attachments.reduce((t, a) => t + a.size, 0);
 
-  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files?.length) return;
     setError("");
@@ -1241,24 +1257,11 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: {
       return;
     }
 
-    setIsLoading(true);
-    setLoadingProgress("Preparing files (large videos auto-compressed)...");
-    try {
-      const newAtts: Attachment[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        setLoadingProgress(`[${i + 1}/${files.length}] Processing ${f.name}...`);
-        const processed = await processAndCompressFile(f, msg => setLoadingProgress(`[${i + 1}/${files.length}] ${msg}`));
-        newAtts.push(processed);
-      }
-      onChange([...attachments, ...newAtts]);
-    } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      setIsLoading(false);
-      setLoadingProgress("");
-      event.target.value = "";
-    }
+    // Instant: create object URLs for preview, hold raw File for upload later.
+    // No FileReader, no encoding, no compression — just instant.
+    const newAtts: Attachment[] = Array.from(files).map(f => fileToAttachment(f));
+    onChange([...attachments, ...newAtts]);
+    event.target.value = "";
   }
 
   return (
@@ -1267,236 +1270,112 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            Photos & videos. Large videos auto-compressed. 
-            <span className="block text-amber-300/70 mt-1">Note: GitHub uploads 50MB in ~1-3 minutes. Click Save and leave — it uploads in background.</span>
-          </p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Photos & videos up to 500MB. Added instantly, uploaded to your media repo in background when you click Save. No waiting.</p>
         </div>
-        <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
-          {isLoading ? "Processing..." : "Add"}
+        <button type="button" onClick={() => inputRef.current?.click()} className="round-button shrink-0">
+          Add
         </button>
       </div>
-
-      {loadingProgress && (
-        <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200/80 animate-pulse">{loadingProgress}</div>
-      )}
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
         {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
       </div>
 
-      {totalBytes > 50 * 1024 * 1024 && (
+      {totalBytes > 100 * 1024 * 1024 && (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          ⚠️ <strong>Large files:</strong> {formatBytes(totalBytes)} will upload to GitHub in the background after you click Save. 
-          <span className="block mt-1 text-amber-200/70">GitHub API is slow (~1-3 min for 50MB). You can leave this screen immediately — upload continues in background.</span>
+          ⚠️ Total is {formatBytes(totalBytes)}. Upload happens in the background after you click Save — you can navigate away immediately.
         </p>
       )}
 
       {error ? <SyncError message={error} compact /> : null}
 
       <div className="mt-4 grid gap-3">
-        {attachments.map((att, idx) => (
-          <div key={att.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
-            <button type="button" onClick={() => onOpenLightbox(attachments, idx)} className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in">
-              {att.dataUrl ? (
-                att.type.startsWith("image/") ? (
-                  <img src={att.dataUrl} alt={att.name} className="h-full w-full object-cover" />
-                ) : att.type.startsWith("video/") ? (
-                  <video src={att.dataUrl} className="h-full w-full object-cover" />
+        {attachments.map((att, idx) => {
+          // Priority: objectUrl (new files) > mediaUrl (saved cloud) > dataUrl (legacy)
+          const previewSrc = att.objectUrl ?? att.mediaUrl ?? att.dataUrl ?? null;
+          const isCloud = !!att.mediaUrl && !att.objectUrl && !att.file;
+          const isPendingUpload = (!!att.file || !!att.objectUrl) && !att.mediaUrl;
+
+          return (
+            <div key={att.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
+              <button type="button" onClick={() => onOpenLightbox(attachments, idx)} className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in">
+                {previewSrc ? (
+                  att.type.startsWith("image/") ? (
+                    <img src={previewSrc} alt={att.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
+                  ) : att.type.startsWith("video/") ? (
+                    <video src={previewSrc} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">📎 {att.name}</div>
+                  )
                 ) : (
-                  <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">📎 {att.name}</div>
-                )
-              ) : att.mediaUrl ? (
-                att.type.startsWith("image/") ? (
-                  <img src={att.mediaUrl} alt={att.name} className="h-full w-full object-cover" />
-                ) : att.type.startsWith("video/") ? (
-                  <video src={att.mediaUrl} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">📎 {att.name}</div>
-                )
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">☁️ Will upload on save</div>
-              )}
-              <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
-                <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">Click to view fullscreen</span>
-              </span>
-              {att.mediaUrl && !att.dataUrl && (
-                <span className="absolute top-2 right-2 bg-black/60 backdrop-blur text-[10px] text-cyan-300 px-2 py-0.5 rounded-full border border-cyan-500/30">☁️ Cloud</span>
-              )}
-              {att.dataUrl && !att.mediaUrl && (
-                <span className="absolute top-2 right-2 bg-black/60 backdrop-blur text-[10px] text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30">⏫ Will upload</span>
-              )}
-            </button>
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-white">{att.name}</p>
-                <p className="text-xs text-slate-500">{formatBytes(att.size)}</p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {att.dataUrl && (
-                  <a href={att.dataUrl} download={att.name} onClick={e => e.stopPropagation()}
-                    className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100">
-                    Download
-                  </a>
+                  <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">☁️ Will upload on save</div>
                 )}
-                <button type="button" onClick={() => onChange(attachments.filter(i => i.id !== att.id))}
-                  className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100">
-                  Remove
-                </button>
+                <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
+                  <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">Click to view fullscreen</span>
+                </span>
+                {isCloud && <span className="absolute top-2 right-2 bg-black/60 backdrop-blur text-[10px] text-cyan-300 px-2 py-0.5 rounded-full border border-cyan-500/30">☁️ Saved</span>}
+                {isPendingUpload && <span className="absolute top-2 right-2 bg-black/60 backdrop-blur text-[10px] text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30">⏫ Uploads on Save</span>}
+              </button>
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-white">{att.name}</p>
+                  <p className="text-xs text-slate-500">{formatBytes(att.size)}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {previewSrc && (
+                    <a href={previewSrc} download={att.name} onClick={e => e.stopPropagation()}
+                      className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100">
+                      Download
+                    </a>
+                  )}
+                  <button type="button" onClick={() => {
+                    if (att.objectUrl) URL.revokeObjectURL(att.objectUrl);
+                    onChange(attachments.filter(i => i.id !== att.id));
+                  }}
+                    className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-rose-300/40 hover:bg-rose-400/10 hover:text-rose-100">
+                    Remove
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
 }
 
-// =================== MEDIA COMPRESSION ===================
-async function processAndCompressFile(file: File, onProgress?: (msg: string) => void): Promise<Attachment> {
-  const isImage = file.type.startsWith("image/");
-  const isVideo = file.type.startsWith("video/");
+// =================== FAST FILE HANDLING (no compression) ===================
+// Files are kept as raw File objects in memory — no encoding until upload.
+// Upload uses arrayBuffer() + chunked base64 encoding — fastest possible path.
 
-  let dataUrl: string;
-  let finalName = file.name;
-  let finalType = file.type || "application/octet-stream";
-  let finalSize = file.size;
-
-  if (isImage && file.size > 2 * 1024 * 1024) {
-    onProgress?.(`Compressing image: ${file.name}`);
-    dataUrl = await compressImage(file, 1920, 0.85);
-    finalSize = estimateBytesFromBase64(dataUrl.split(",")[1] || "");
-  } else if (isVideo && file.size > 25 * 1024 * 1024) {
-    onProgress?.(`Compressing video (${formatBytes(file.size)}), this takes a while...`);
-    const result = await compressVideo(file, 720, 2_500_000);
-    dataUrl = result.dataUrl;
-    finalName = result.name;
-    finalType = result.type;
-    finalSize = result.size;
-    onProgress?.(`Compressed to ${formatBytes(finalSize)}`);
-  } else {
-    onProgress?.(`Loading: ${file.name}`);
-    dataUrl = await readFileAsDataURL(file);
-  }
-
+function fileToAttachment(file: File): Attachment {
+  // Create an instant object URL for preview — no FileReader, no encoding, instant.
+  const objectUrl = URL.createObjectURL(file);
   return {
     id: createId(),
-    name: finalName,
-    type: finalType,
-    size: finalSize,
-    dataUrl,
+    name: file.name,
+    type: file.type || "application/octet-stream",
+    size: file.size,
     addedAt: new Date().toISOString(),
+    file,        // keep raw File reference for upload
+    objectUrl,   // instant preview URL
   };
 }
 
-function readFileAsDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-    r.readAsDataURL(file);
-  });
-}
-
-async function compressImage(file: File, maxDim = 1920, quality = 0.85): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        let { width, height } = img;
-        const scale = Math.min(1, maxDim / Math.max(width, height));
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return reject(new Error("Canvas unavailable"));
-        ctx.drawImage(img, 0, 0, width, height);
-        const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
-        resolve(canvas.toDataURL(mime, mime === "image/png" ? undefined : quality));
-      };
-      img.onerror = () => reject(new Error(`Failed to decode ${file.name}`));
-      img.src = String(reader.result);
-    };
-    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function compressVideo(file: File, maxHeight = 720, videoBitrate = 2_500_000): Promise<{ dataUrl: string; size: number; type: string; name: string }> {
-  if (file.size < 25 * 1024 * 1024) {
-    const dataUrl = await readFileAsDataURL(file);
-    return { dataUrl, size: file.size, type: file.type, name: file.name };
+/**
+ * Convert ArrayBuffer to base64 in chunks to avoid call stack overflows on large files.
+ * This is much faster than going via FileReader.readAsDataURL (which also adds the data: prefix overhead).
+ */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000; // 32KB chunks
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
   }
-
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    video.src = url;
-    video.muted = true;
-    video.playsInline = true;
-    video.crossOrigin = "anonymous";
-
-    video.onloadedmetadata = async () => {
-      try {
-        await video.play();
-        const scale = Math.min(1, maxHeight / video.videoHeight);
-        const w = Math.round(video.videoWidth * scale);
-        const h = Math.round(video.videoHeight * scale);
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { URL.revokeObjectURL(url); return reject(new Error("Canvas unavailable")); }
-
-        const canvasStream = canvas.captureStream(30);
-        try {
-          // @ts-ignore
-          const vStream = video.captureStream ? video.captureStream() : (video as any).mozCaptureStream?.();
-          if (vStream) {
-            vStream.getAudioTracks().forEach((t: MediaStreamTrack) => canvasStream.addTrack(t));
-          }
-        } catch { /* audio may fail */ }
-
-        const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(t => MediaRecorder.isTypeSupported?.(t)) || "video/webm";
-        const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: videoBitrate });
-        const chunks: Blob[] = [];
-        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-        recorder.onstop = () => {
-          const blob = new Blob(chunks, { type: mimeType });
-          const r = new FileReader();
-          r.onload = () => {
-            URL.revokeObjectURL(url);
-            const ext = mimeType.includes("mp4") ? ".mp4" : ".webm";
-            const baseName = file.name.replace(/\.[^.]+$/, "");
-            resolve({ dataUrl: String(r.result), size: blob.size, type: mimeType, name: `${baseName}_compressed${ext}` });
-          };
-          r.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Failed to read compressed video")); };
-          r.readAsDataURL(blob);
-        };
-        recorder.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Video recording failed")); };
-
-        let raf: number;
-        function drawFrame() {
-          if (ctx) ctx.drawImage(video, 0, 0, w, h);
-          raf = requestAnimationFrame(drawFrame);
-        }
-        drawFrame();
-        recorder.start(100);
-        video.onended = () => { cancelAnimationFrame(raf); if (recorder.state !== "inactive") recorder.stop(); };
-        setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, Math.round((video.duration || 300) * 1000) + 1000);
-      } catch (err) {
-        URL.revokeObjectURL(url);
-        reject(err);
-      }
-    };
-    video.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Failed to load video: ${file.name}`)); };
-  });
-}
-
-function estimateBytesFromBase64(b64: string): number {
-  const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
-  return (b64.length * 3) / 4 - padding;
+  return btoa(binary);
 }
 
 // =================== YEAR PIXELS ===================

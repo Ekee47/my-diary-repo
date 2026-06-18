@@ -105,12 +105,17 @@ const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const SEMANTIC_DICTIONARY: Record<string, string[]> = {
-  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
-  alex: ["friend", "buddy", "partner", "mate", "brother"],
-  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
-  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
-  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
-  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
+  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island", "samundar", "pani", "beachside"],
+  alex: ["friend", "buddy", "partner", "mate", "brother", "dost", "yaar"],
+  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client", "job", "kaam"],
+  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift", "cardio"],
+  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled", "khush"],
+  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure", "tension", "pareshan"],
+  love: ["romantic", "crush", "pyaar", "date", "heart", "relationship"],
+  family: ["home", "parents", "mom", "dad", "mummy", "papa", "bhai", "sister", "ghar"],
+  food: ["khana", "dinner", "lunch", "breakfast", "restaurant", "cafe"],
+  travel: ["trip", "journey", "vacation", "flight", "drive", "outing", "ghoomna"],
+  sleep: ["sleepy", "sleep", "nap", "rest", "neend", "thaka"],
 };
 
 interface AIResponseRendererProps {
@@ -1784,6 +1789,7 @@ function AIIntelligenceView({
   // States for AI response with clickable dates
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
+  const allowedAIDates = useMemo(() => new Set(entries.map((e) => e.date)), [entries]);
 
   const globalTopicCloud = useMemo(() => {
     const frequencyMap: Record<string, number> = {};
@@ -1933,10 +1939,10 @@ function AIIntelligenceView({
             </h4>
             <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
               <AIResponseRenderer
-                text={aiAnswer}
-                onDateClick={onJumpToEntry}
-                allowedDates={useMemo(() => new Set(entries.map((e) => e.date)), [entries])}
-              />
+  text={aiAnswer}
+  onDateClick={onJumpToEntry}
+  allowedDates={allowedAIDates}
+/>
             </p>
           </div>
         )}

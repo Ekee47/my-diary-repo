@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
-import { smartAISearch, generateAICustomQuestion, assessEntryEmotion } from "./aiService";
+import { smartAISearch, generateAICustomQuestion, generateAITags } from "./aiService";
 
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
@@ -35,7 +35,9 @@ type DiaryEntry = {
   attachments: Attachment[];
   createdAt: string;
   updatedAt: string;
+  aiTags?: string[];
 };
+
 
 type VaultData = {
   version: 1;
@@ -105,17 +107,12 @@ const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const SEMANTIC_DICTIONARY: Record<string, string[]> = {
-  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island", "samundar", "pani", "beachside"],
-  alex: ["friend", "buddy", "partner", "mate", "brother", "dost", "yaar"],
-  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client", "job", "kaam"],
-  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift", "cardio"],
-  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled", "khush"],
-  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure", "tension", "pareshan"],
-  love: ["romantic", "crush", "pyaar", "date", "heart", "relationship"],
-  family: ["home", "parents", "mom", "dad", "mummy", "papa", "bhai", "sister", "ghar"],
-  food: ["khana", "dinner", "lunch", "breakfast", "restaurant", "cafe"],
-  travel: ["trip", "journey", "vacation", "flight", "drive", "outing", "ghoomna"],
-  sleep: ["sleepy", "sleep", "nap", "rest", "neend", "thaka"],
+  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
+  alex: ["friend", "buddy", "partner", "mate", "brother"],
+  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
+  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
+  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
+  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
 };
 
 interface AIResponseRendererProps {
@@ -174,58 +171,53 @@ function parseReadableDateToISO(readableDate: string): string | null {
 /**
  * Renders AI response text, turning readable date strings into clickable system buttons
  */
-export function AIResponseRenderer({
-  text,
-  onDateClick,
-  allowedDates,
-}: AIResponseRendererProps & { allowedDates?: Set<string> }) {
-  // Supports both:
-  // [1st july 2026]
-  // 1st july 2026
-  const dateRegex = /\[?(\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+\s+\d{4})\]?/gi;
-
+export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIResponseRendererProps & { allowedDates?: Set<string> }) {
+  // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
+  const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
+  
   const parts: ReactNode[] = [];
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  let match;
   let keyIndex = 0;
 
   while ((match = dateRegex.exec(text)) !== null) {
+    // Add text before the match
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex, match.index)}</span>);
     }
-
-    const fullMatch = match[0];
-    const readableDate = match[1];
-    const isoDate = parseReadableDateToISO(readableDate);
-
+    
+    const rawReadableDate = match[0];
+    const isoDate = parseReadableDateToISO(rawReadableDate);
+    
     if (isoDate && (!allowedDates || allowedDates.has(isoDate))) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
           onClick={() => onDateClick(isoDate)}
-          className="inline font-bold text-cyan-400 hover:text-cyan-300 hover:underline transition-colors cursor-pointer"
+          className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors cursor-pointer"
           style={{
-            background: "none",
-            border: "none",
+            background: 'none',
+            border: 'none',
             padding: 0,
-            font: "inherit",
-            color: "#22d3ee",
-            fontWeight: "bold",
-            cursor: "pointer",
-            textDecoration: "underline",
+            font: 'inherit',
+            color: '#22d3ee',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            textDecoration: 'underline'
           }}
           title={`Click to open entry for ${isoDate}`}
         >
-          {fullMatch}
+          {rawReadableDate}
         </button>
       );
     } else {
-      parts.push(<span key={`date-${keyIndex++}`}>{fullMatch}</span>);
+      parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
     }
-
-    lastIndex = match.index + fullMatch.length;
+    
+    lastIndex = match.index + match[0].length;
   }
 
+  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex)}</span>);
   }
@@ -913,13 +905,9 @@ function HomeView({
             <div className="mt-5 space-y-4">
               <div className="flex flex-wrap gap-2 items-center">
                 <MoodChip mood={selectedEntry.mood} />
-                <AIAssessmentChip
-                  title={selectedEntry.title}
-                  html={selectedEntry.bodyHtml}
-                  date={selectedEntry.date}
-                  prefix=""
-                  className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20"
-                  />
+                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
+                  {detectSentimentLabel(selectedEntry.bodyHtml)}
+                </span>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
@@ -1067,104 +1055,6 @@ function MonthlyCalendar({
   );
 }
 
-function hashString(value: string) {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function AIAssessmentChip({
-  title,
-  html,
-  date,
-  prefix = "AI Assessment:",
-  className,
-}: {
-  title?: string;
-  html: string;
-  date?: string;
-  prefix?: string;
-  className?: string;
-}) {
-  const plainText = useMemo(() => htmlToText(html), [html]);
-
-  const cacheKey = useMemo(
-    () =>
-      `moonlit-ai-emotion-assessment-v1:${hashString(
-        `${date || ""}|${title || ""}|${plainText}`
-      )}`,
-    [date, title, plainText]
-  );
-
-  const [label, setLabel] = useState("Assessing…");
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const trimmed = plainText.trim();
-
-    if (!trimmed || trimmed.length < 5) {
-      setLabel("Neutral");
-      return;
-    }
-
-    try {
-      const cached = localStorage.getItem(cacheKey);
-      if (cached) {
-        setLabel(cached);
-        return;
-      }
-    } catch {
-      // ignore cache errors
-    }
-
-    setLabel("Assessing…");
-
-    const timer = window.setTimeout(() => {
-      assessEntryEmotion({
-        title,
-        bodyHtml: html,
-        date,
-      })
-        .then((assessment) => {
-          if (cancelled) return;
-
-          const clean = assessment.trim() || "Neutral";
-          setLabel(clean);
-
-          try {
-            localStorage.setItem(cacheKey, clean);
-          } catch {
-            // ignore cache errors
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setLabel("AI unavailable");
-        });
-    }, 700);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [cacheKey, title, html, date, plainText]);
-
-  return (
-    <span
-      className={
-        className ||
-        "text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20"
-      }
-      title="Generated by AI from your diary text"
-    >
-      {prefix === "" ? label : `${prefix} ${label}`}
-    </span>
-  );
-}
-
 function EntryEditor({
   dateKey,
   entry,
@@ -1203,11 +1093,20 @@ function EntryEditor({
   const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const computedTags = useMemo(() => {
+    const isUnchanged = entry && htmlToText(bodyHtml) === htmlToText(entry.bodyHtml) && title === entry.title;
+
+    // If you haven't typed anything new, show the locked-in AI tags
+    if (isUnchanged && entry?.aiTags && entry.aiTags.length > 0) {
+      return entry.aiTags;
+    }
+
+    // If you are actively typing, show the fast rule-based preview
     return extractTopicsAndTags(bodyHtml, title);
-  }, [bodyHtml, title]);
+  }, [bodyHtml, title, entry]);
 
   // Track if we have unsaved changes compared to last draft save
-  const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
+  const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments, aiTags: entry?.aiTags });
+  
   
   useEffect(() => {
     setHasUnsavedChanges(currentDraftState !== lastSavedDraft);
@@ -1260,8 +1159,25 @@ function EntryEditor({
   async function handleSave() {
     setLocalError("");
     setIsWorking(true);
-
     try {
+      const plainBody = htmlToText(bodyHtml).trim();
+      const oldPlain = htmlToText(entry?.bodyHtml || "").trim();
+
+      let currentTags = entry?.aiTags || [];
+
+      // Only burn an API call if the text actually changed, or if it has no tags yet
+      if ((plainBody !== oldPlain || title !== entry?.title || !entry?.aiTags) && plainBody.length > 10) {
+        try {
+          const aiGenerated = await generateAITags(title.trim() || "Untitled", bodyHtml);
+          if (aiGenerated.length > 0) {
+            currentTags = aiGenerated;
+          }
+        } catch (e) {
+          console.warn("AI tagging failed, using fallback rule tags.");
+          currentTags = extractTopicsAndTags(bodyHtml, title);
+        }
+      }
+
       const now = new Date().toISOString();
       const nextEntry: DiaryEntry = {
         id: entry?.id ?? createId(),
@@ -1273,6 +1189,7 @@ function EntryEditor({
         attachments,
         createdAt: entry?.createdAt ?? now,
         updatedAt: now,
+        aiTags: currentTags,
       };
 
       await onSave(nextEntry);
@@ -1282,6 +1199,8 @@ function EntryEditor({
       setIsWorking(false);
     }
   }
+
+
 
   async function handleDelete() {
     if (!entry) return;
@@ -1378,12 +1297,9 @@ function EntryEditor({
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
             <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
-            <AIAssessmentChip
-  title={title}
-  html={bodyHtml}
-  date={dateKey}
-  className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10"
-/>
+            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
+              AI Assessment: {detectSentimentLabel(bodyHtml)}
+            </span>
           </div>
 
           <input
@@ -1794,7 +1710,6 @@ function AIIntelligenceView({
   // States for AI response with clickable dates
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
-  const allowedAIDates = useMemo(() => new Set(entries.map((e) => e.date)), [entries]);
 
   const globalTopicCloud = useMemo(() => {
     const frequencyMap: Record<string, number> = {};
@@ -1944,10 +1859,10 @@ function AIIntelligenceView({
             </h4>
             <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
               <AIResponseRenderer
-  text={aiAnswer}
-  onDateClick={onJumpToEntry}
-  allowedDates={allowedAIDates}
-/>
+                text={aiAnswer}
+                onDateClick={onJumpToEntry}
+                allowedDates={useMemo(() => new Set(entries.map((e) => e.date)), [entries])}
+              />
             </p>
           </div>
         )}
@@ -1985,13 +1900,9 @@ function AIIntelligenceView({
                     </div>
                     
                     <div className="flex items-center gap-2 shrink-0">
-                      <AIAssessmentChip
-  title={item.title}
-  html={item.bodyHtml}
-  date={item.date}
-  prefix=""
-  className="text-xs text-slate-500 hidden sm:inline"
-/>
+                      <span className="text-xs text-slate-500 hidden sm:inline">
+                        {detectSentimentLabel(item.bodyHtml)}
+                      </span>
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
                     </div>
                   </button>
@@ -2076,79 +1987,51 @@ function MoodPieChart({
   moods: MoodOption[];
   distribution: Record<MoodId, number>;
 }) {
-  const activeMoods = moods.filter((m) => (distribution[m.id] || 0) > 0);
-  const total = activeMoods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
+  const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
+  const normalized = total || 1;
 
-  if (total === 0) {
-    return (
-      <div className="relative flex h-[150px] w-[150px] flex-shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] shadow-[0_0_40px_rgba(34,211,238,0.08)]">
-        <div className="text-center">
-          <div className="text-2xl font-semibold text-white">0</div>
-          <div className="text-[11px] text-slate-400">entries</div>
-        </div>
-      </div>
-    );
-  }
-
-  const size = 150;
-  const center = size / 2;
-  const radius = 48;
-  const stroke = 14;
-  const circumference = 2 * Math.PI * radius;
   let cumulative = 0;
+  const radius = 44;
+  const stroke = 12;
 
   return (
     <div className="relative flex-shrink-0">
-      <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.12),transparent_65%)] blur-2xl" />
-      <svg
-        width={size}
-        height={size}
-        viewBox={`0 0 ${size} ${size}`}
-        className="relative drop-shadow-[0_0_24px_rgba(34,211,238,0.08)]"
-      >
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth={stroke}
-          fill="none"
-        />
+      <div className="relative">
+        <svg width={120} height={120} viewBox="0 0 120 120" className="drop-shadow">
+          <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
+          {moods.map((m) => {
+            const value = distribution[m.id] || 0;
+            const fraction = value / normalized;
+            const dash = 2 * Math.PI * radius;
+            const seg = dash * fraction;
+            const offset = dash * (1 - cumulative);
+            cumulative += fraction;
 
-        {activeMoods.map((m) => {
-          const value = distribution[m.id] || 0;
-          const fraction = value / total;
-          const segment = circumference * fraction;
-          const visibleSegment = Math.max(segment - 3, 0); // tiny gap between arcs
-          const offset = circumference * (1 - cumulative);
+            return (
+              <circle
+                key={m.id}
+                cx="60"
+                cy="60"
+                r={radius}
+                stroke={m.color}
+                strokeWidth={stroke}
+                strokeLinecap="round"
+                fill="none"
+                strokeDasharray={`${seg} ${dash - seg}`}
+                strokeDashoffset={offset}
+                transform="rotate(-90 60 60)"
+                style={{
+                  filter: `drop-shadow(0 0 10px ${m.glow})`,
+                }}
+              />
+            );
+          })}
+        </svg>
 
-          cumulative += fraction;
-
-          return (
-            <circle
-              key={m.id}
-              cx={center}
-              cy={center}
-              r={radius}
-              stroke={m.color}
-              strokeWidth={stroke}
-              strokeLinecap="round"
-              fill="none"
-              strokeDasharray={`${visibleSegment} ${circumference - visibleSegment}`}
-              strokeDashoffset={offset}
-              transform={`rotate(-90 ${center} ${center})`}
-              style={{
-                filter: `drop-shadow(0 0 10px ${m.glow})`,
-              }}
-            />
-          );
-        })}
-      </svg>
-
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="flex h-[78px] w-[78px] flex-col items-center justify-center rounded-full border border-white/10 bg-[#081019]/92 shadow-[inset_0_1px_10px_rgba(255,255,255,0.04),0_0_18px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-          <div className="text-2xl font-semibold text-white">{total}</div>
-          <div className="text-[11px] text-slate-400">entries</div>
+        <div className="absolute inset-0 flex items-center justify-center flex-col text-center">
+          <div className="text-[10px] uppercase tracking-widest text-cyan-100/50">mood mix</div>
+          <div className="text-lg font-semibold text-white">{total}</div>
+          <div className="text-[10px] text-slate-400">entries</div>
         </div>
       </div>
     </div>
@@ -2431,23 +2314,98 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
+const TAG_STOPWORDS = new Set([
+  "the","and","that","this","with","have","just","like","really","very","much","some","then","than","them","they",
+  "your","you","yours","mine","what","when","where","which","while","about","there","here","were","was","because",
+  "from","into","onto","over","under","again","still","also","even","ever","never","always","today","tomorrow",
+  "yesterday","going","gonna","wanna","feel","felt","feeling","think","thought","know","knew","want","wanted",
+  "good","bad","nice","thing","things","stuff","kind","sort","lot","lots","time","day","days","week","month","year",
+  "morning","night","evening","being","doing","done","make","made","take","took","come","came","went","need",
+  "kal","aaj","mai","main","tha","thi","hai","hain","raha","rahi","gaya","gayi","kuch","bahut","kar","karna","karke",
+  "mera","meri","tera","apna","wala","wali","yeh","woh","sab","bhi","toh","abhi","phir","aur","par","mein","hoon","tha",
+  "entry","entries","title","untitled"
+]);
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function extractTopicsAndTags(html: string, title: string): string[] {
-  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
+  const plain = htmlToText(html).trim();
+  const combinedRaw = `${title} ${title} ${plain}`.trim();
+  const combinedLower = combinedRaw.toLowerCase();
+
+  if (!combinedLower) return [];
+
   const foundTags = new Set<string>();
 
-  const hashMatches = combinedText.match(/#\w+/g);
+  const hashMatches = combinedLower.match(/#[\p{L}\w]+/gu);
   if (hashMatches) {
-    hashMatches.forEach((match) => foundTags.add(match.replace("#", "")));
+    hashMatches.forEach((match) => foundTags.add(match.replace(/^#/, "")));
   }
 
-  if (combinedText.includes("alex")) foundTags.add("alex");
-  if (combinedText.includes("beach") || combinedText.includes("ocean") || combinedText.includes("sea")) foundTags.add("beach");
-  if (combinedText.includes("work") || combinedText.includes("project") || combinedText.includes("office")) foundTags.add("work");
-  if (combinedText.includes("gym") || combinedText.includes("workout") || combinedText.includes("run")) foundTags.add("fitness");
-  if (combinedText.includes("coding") || combinedText.includes("code") || combinedText.includes("app")) foundTags.add("dev");
-  if (combinedText.includes("family") || combinedText.includes("home") || combinedText.includes("parents")) foundTags.add("family");
+  const concepts: Record<string, string[]> = {
+    work: ["work", "office", "project", "meeting", "boss", "client", "deadline", "job", "kaam"],
+    study: ["study", "exam", "test", "assignment", "class", "college", "clg", "school", "padhai"],
+    fitness: ["gym", "workout", "exercise", "training", "run", "running", "cardio", "lift"],
+    coding: ["coding", "code", "bug", "deploy", "app", "developer", "programming", "software"],
+    family: ["family", "parents", "mom", "dad", "mummy", "papa", "brother", "sister", "ghar"],
+    friends: ["friend", "friends", "buddy", "dost", "yaar", "group", "hangout"],
+    love: ["love", "crush", "relationship", "date", "romantic", "pyaar", "girlfriend", "boyfriend"],
+    sleep: ["sleep", "sleepy", "nap", "rest", "neend", "insomnia"],
+    food: ["food", "khana", "breakfast", "lunch", "dinner", "restaurant", "cafe", "coffee"],
+    travel: ["trip", "travel", "journey", "flight", "vacation", "outing", "drive", "ghoomna"],
+    beach: ["beach", "ocean", "sea", "shore", "coast", "waves", "sand", "samundar"],
+    money: ["money", "salary", "paisa", "budget", "expense", "shopping", "rent"],
+    health: ["health", "sick", "doctor", "medicine", "fever", "tabiyat"],
+    music: ["music", "song", "songs", "playlist", "gaana", "concert"],
+  };
 
-  return Array.from(foundTags);
+  for (const [tag, words] of Object.entries(concepts)) {
+    const matched = words.some((word) => {
+      const regex = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
+      return regex.test(combinedRaw);
+    });
+    if (matched) foundTags.add(tag);
+  }
+
+  const words = combinedLower.match(/[a-z]{4,}/g) || [];
+  const freq: Record<string, number> = {};
+
+  for (const word of words) {
+    if (TAG_STOPWORDS.has(word)) continue;
+    freq[word] = (freq[word] || 0) + 1;
+  }
+
+  const keywordCandidates = Object.entries(freq)
+    .filter(([word, count]) => count >= 2 && word.length >= 4 && !foundTags.has(word))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([word]) => word);
+
+  keywordCandidates.forEach((word) => foundTags.add(word));
+
+  const bannedTags = new Set(["water","great","thing","stuff","really","today","tomorrow","yesterday","untitled"]);
+  return Array.from(foundTags).filter((tag) => !bannedTags.has(tag)).slice(0, 8);
+}
+
+
+function detectSentimentLabel(html: string): string {
+  const plainText = htmlToText(html).toLowerCase();
+  if (!plainText || plainText.length < 5) return "Neutral Focus";
+
+  let positiveScore = 0;
+  let heavyScore = 0;
+
+  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
+  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
+
+  positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
+  heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
+
+  if (positiveScore > heavyScore) return "Energetic & Bright";
+  if (heavyScore > positiveScore) return "Reflective & Introspective";
+  return "Balanced Reflection";
 }
 
 function addMonths(date: Date, amount: number) {

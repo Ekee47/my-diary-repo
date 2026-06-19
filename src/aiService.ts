@@ -8,14 +8,15 @@ export interface DiaryEntry {
 }
 
 // Automatically pulls the key securely baked in from GitHub Actions
-// Note: import.meta.env may be typed differently depending on tooling; keep it resilient.
 const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL_NAME = "llama-3.1-8b-instant"; // Active, ultra-fast 2026 free-tier model
 
 const SYSTEM_PROMPT = `
 You are the private, intelligent AI brain of the user's personal journal.
-Ekansh writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
+Ekansh writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script 
+(Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang 
+(e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
 
 You MUST follow privacy-first behavior: never ask for secrets, passwords, or anything outside the journal content.
 
@@ -28,14 +29,14 @@ TEMPORAL REASONING:
 - Do not list multiple dates unless the user truly asks for them.
 
 DATE FORMATTING RULE (hard requirement):
-Whenever you mention a specific date from the journal, format it exactly like: [1st july 2026], [2nd august 2025], [23rd june 2026]
+Whenever you mention a specific date from the journal, format it exactly like: [1st july 2026], [2nd august 2025], 
+[23rd june 2026]
 (lowercase month, correct ordinal suffix st/nd/rd/th, wrapped in square brackets).
 
 OUTPUT STYLE:
 - Be direct, smart, and specific.
 - Don’t waffle. Don’t say "I’m still thinking".
 `;
-
 
 /**
  * 1. AI SMART SEARCH
@@ -46,58 +47,55 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   }
 
   const cleanText = (html: string) =>
- html
- .replace(/<style[\s\S]*?<\/style>/gi, " ")
- .replace(/<script[\s\S]*?<\/script>/gi, " ")
- .replace(/<\/?[^>]+(>|$)/g, " ")
- .replace(/&nbsp;/g, " ")
- .replace(/\s+/g, " ")
- .trim();
+    html
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<\/?[^>]+(>|$)/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
-function ordinalSuffix(day: number) {
- const mod100 = day % 100;
- if (mod100 >= 11 && mod100 <= 13) return "th";
- if (day % 10 === 1) return "st";
- if (day % 10 === 2) return "nd";
- if (day % 10 === 3) return "rd";
- return "th";
-}
+  function ordinalSuffix(day: number) {
+    const mod100 = day % 100;
+    if (mod100 >= 11 && mod100 <= 13) return "th";
+    if (day % 10 === 1) return "st";
+    if (day % 10 === 2) return "nd";
+    if (day % 10 === 3) return "rd";
+    return "th";
+  }
 
-function isoToReadableDate(iso: string) {
- const months = [
- "january", "february", "march", "april", "may", "june",
- "july", "august", "september", "october", "november", "december"
- ];
+  function isoToReadableDate(iso: string) {
+    const months = [
+      "january", "february", "march", "april", "may", "june",
+      "july", "august", "september", "october", "november", "december"
+    ];
+    const [yearRaw, monthRaw, dayRaw] = iso.split("-");
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    const day = Number(dayRaw);
+    if (!year || !month || !day || month < 1 || month > 12) return iso;
+    return `${day}${ordinalSuffix(day)} ${months[month - 1]} ${year}`;
+  }
 
- const [yearRaw, monthRaw, dayRaw] = iso.split("-");
- const year = Number(yearRaw);
- const month = Number(monthRaw);
- const day = Number(dayRaw);
+  const sortedEntries = entries.slice().sort((a, b) => a.date.localeCompare(b.date));
 
- if (!year || !month || !day || month < 1 || month > 12) return iso;
+  const allowedDateList = sortedEntries
+    .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
+    .join("\n");
 
- return `${day}${ordinalSuffix(day)} ${months[month - 1]} ${year}`;
-}
-
-const sortedEntries = entries.slice().sort((a, b) => a.date.localeCompare(b.date));
-
-const allowedDateList = sortedEntries
- .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
- .join("\n");
-
-const formattedContext = sortedEntries
- .map(
- (e) => `
+  const formattedContext = sortedEntries
+    .map(
+      (e) => `
 ENTRY_DATE_ISO: ${e.date}
 CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
 TITLE: ${e.title}
 ENTRY_TEXT:
 ${cleanText(e.bodyHtml)}
 `
- )
- .join("\n\n--- ENTRY BREAK ---\n\n");
+    )
+    .join("\n\n--- ENTRY BREAK ---\n\n");
 
-const prompt = `
+  const prompt = `
 User Query:
 "${query}"
 
@@ -137,19 +135,18 @@ ${formattedContext}
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${API_KEY}`
+        Authorization: `Bearer ${API_KEY}`,
       },
       body: JSON.stringify({
         model: MODEL_NAME,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt }
+          { role: "user", content: prompt },
         ],
         temperature: 0.1,
       }),
     });
 
-    // Smart Error Catcher: Shows the real issue if the API fails
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
       return `AI Response Error (${response.status}): ${errData?.error?.message || "Failed to communicate with Groq servers."}`;
@@ -172,7 +169,7 @@ export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<s
   }
 
   const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
-  
+
   const recentEntries = entries.slice(-5);
   const formattedContext = recentEntries
     .map((e) => `[Date: ${e.date}]\nEntry: ${cleanText(e.bodyHtml)}`)
@@ -202,22 +199,18 @@ JOURNAL EXCERPTS:
 ${formattedContext}
 `;
 
-
-
-
-
   try {
     const response = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${API_KEY}`
+        Authorization: `Bearer ${API_KEY}`,
       },
       body: JSON.stringify({
         model: MODEL_NAME,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt }
+          { role: "user", content: prompt },
         ],
         temperature: 0.85,
       }),
@@ -232,39 +225,8 @@ ${formattedContext}
   }
 }
 
-export async function generateAITags(title: string, bodyHtml: string): Promise<string[]> {
-  if (!API_KEY) return [];
-  const clean = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
-  const prompt = `
-Read this journal entry and extract 3-7 short, meaningful topic tags (people, places, themes, emotions, activities).
-Title: ${title}
-Body: ${clean(bodyHtml)}
-
-Rules: lowercase, single words or short phrases, no #, no generic words like "day" or "thing".
-Output ONLY a comma-separated list.`;
-  try {
-    const res = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
-      body: JSON.stringify({
-        model: MODEL_NAME,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: prompt }],
-        temperature: 0.3,
-      }),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.choices[0].message.content as string)
-      .split(",").map((t) => t.trim().toLowerCase().replace(/^#/, "")).filter(Boolean).slice(0, 7);
-  } catch {
-    return [];
-  }
-}
-
-
 /**
  * PURE AI EMOTION ASSESSMENT
- * Uses Groq/Llama to understand the actual emotional tone of a journal entry.
  */
 export async function assessEntryEmotion(input: {
   title?: string;
@@ -286,7 +248,8 @@ export async function assessEntryEmotion(input: {
 You are an AI emotional assessment engine for a private diary app.
 
 Analyze this journal entry like a thoughtful emotional intelligence system.
-You understand English, Hinglish, Hindi written in Roman script, slang, abbreviations, sarcasm, mixed emotions, and indirect emotional cues.
+You understand English, Hinglish, Hindi written in Roman script, slang, abbreviations, sarcasm, mixed emotions, 
+and indirect emotional cues.
 
 Diary date: ${input.date || "unknown"}
 Title: ${title}
@@ -297,6 +260,7 @@ Your task:
 Return ONLY one short AI assessment label, 1 to 6 words max.
 
 The label should capture the user's real emotional state, not just positive/negative sentiment.
+
 Examples:
 - Anxious but hopeful
 - Quietly overwhelmed

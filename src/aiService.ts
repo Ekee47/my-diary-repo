@@ -6,38 +6,117 @@ export interface DiaryEntry {
   bodyHtml: string;
 }
 
-// Automatically pulls the key securely baked in from GitHub Actions
-// Note: import.meta.env may be typed differently depending on tooling; keep it resilient.
 const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL_NAME = "llama-3.1-8b-instant"; // Active, ultra-fast 2026 free-tier model
+const MODEL_NAME = "llama-3.1-8b-instant";
 
-const SYSTEM_PROMPT = `
-You are the private, intelligent AI brain of the user's personal journal.
-Ekansh writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
+/* ==========================================================================
+   GLOBAL AI REQUEST QUEUE
+   - One request at a time
+   - Minimum 1100ms between requests (avoids Groq rate limits)
+   - Auto-retry on 429 / 5xx with exponential backoff
+   - Per-key in-flight dedup so identical requests don't fire twice
+   ========================================================================== */
+type QueueTask<T> = {
+  run: () => Promise<T>;
+  resolve: (v: T) => void;
+  reject: (e: unknown) => void;
+};
 
-You MUST follow privacy-first behavior: never ask for secrets, passwords, or anything outside the journal content.
+class AIRequestQueue {
+  private queue: QueueTask<any>[] = [];
+  private processing = false;
+  private lastRequestAt = 0;
+  private readonly minGapMs = 1100;
+  private inFlight = new Map<string, Promise<any>>();
 
-LANGUAGE UNDERSTANDING:
-- Natively translate and decode Hinglish semantic concepts. (Examples: "samundar" = "beach"; "pani" = "water").
-- Infer intent behind slang/abbrev.
+  enqueue<T>(key: string | null, fn: () => Promise<T>): Promise<T> {
+    if (key && this.inFlight.has(key)) {
+      return this.inFlight.get(key)! as Promise<T>;
+    }
+    const promise = new Promise<T>((resolve, reject) => {
+      this.queue.push({ run: fn, resolve, reject });
+      this.process();
+    });
+    if (key) {
+      this.inFlight.set(key, promise);
+      promise.finally(() => this.inFlight.delete(key));
+    }
+    return promise;
+  }
 
-TEMPORAL REASONING:
-- When asked "When did I…", point to the exact journal date when the event actually happened.
-- Do not list multiple dates unless the user truly asks for them.
+  private async process() {
+    if (this.processing) return;
+    this.processing = true;
+    while (this.queue.length > 0) {
+      const gap = Date.now() - this.lastRequestAt;
+      if (gap < this.minGapMs) {
+        await sleep(this.minGapMs - gap);
+      }
+      const task = this.queue.shift()!;
+      this.lastRequestAt = Date.now();
+      try {
+        const result = await task.run();
+        task.resolve(result);
+      } catch (e) {
+        task.reject(e);
+      }
+    }
+    this.processing = false;
+  }
+}
 
-DATE FORMATTING RULE (hard requirement):
-Whenever you mention a specific date from the journal, format it exactly like: [1st july 2026], [2nd august 2025], [23rd june 2026]
-(lowercase month, correct ordinal suffix st/nd/rd/th, wrapped in square brackets).
+const aiQueue = new AIRequestQueue();
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-OUTPUT STYLE:
-- Be direct, smart, and specific.
-- Don't waffle. Don't say "I'm still thinking".
-`;
+/* ==========================================================================
+   Low-level Groq call with retries
+   ========================================================================== */
+async function callGroq(
+  body: Record<string, unknown>,
+  { retries = 3 }: { retries?: number } = {},
+): Promise<any> {
+  let lastErr: any = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_KEY}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-/**
- * Helper: clean HTML into readable plain text for the AI prompt
- */
+      if (response.status === 429 || response.status >= 500) {
+        // Rate-limited or server error: wait and retry
+        const backoff = 800 * Math.pow(2, attempt) + Math.random() * 400;
+        await sleep(backoff);
+        lastErr = new Error(`Groq ${response.status}`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(
+          `AI Response Error (${response.status}): ${errData?.error?.message || "Failed."}`,
+        );
+      }
+      return await response.json();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await sleep(600 * Math.pow(2, attempt));
+        continue;
+      }
+    }
+  }
+  throw lastErr ?? new Error("AI request failed.");
+}
+
+/* ==========================================================================
+   Shared helpers
+   ========================================================================== */
 function cleanHtmlToText(html: string): string {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -59,8 +138,8 @@ function ordinalSuffix(day: number) {
 
 function isoToReadableDate(iso: string) {
   const months = [
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december",
+    "january","february","march","april","may","june",
+    "july","august","september","october","november","december",
   ];
   const [yearRaw, monthRaw, dayRaw] = iso.split("-");
   const year = Number(yearRaw);
@@ -70,8 +149,16 @@ function isoToReadableDate(iso: string) {
   return `${day}${ordinalSuffix(day)} ${months[month - 1]} ${year}`;
 }
 
+const SYSTEM_PROMPT = `
+You are the private, intelligent AI brain of the user's personal journal.
+The user writes in casual English, Hinglish (Roman Hindi), and internet slang.
+NEVER ask for secrets or anything outside the journal content.
+When mentioning a specific date, format it as: [1st july 2026] (lowercase month, ordinal suffix, square brackets).
+Be direct, warm, and specific. Never waffle.
+`.trim();
+
 /* ==========================================================================
-   1. AI SMART SEARCH — rewritten so the response is NEVER blank
+   1) SMART SEARCH — much more forgiving, name/keyword aware
    ========================================================================== */
 export async function smartAISearch(query: string, entries: DiaryEntry[]): Promise<string> {
   if (!API_KEY) {
@@ -88,6 +175,7 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   const allowedDateList = sortedEntries
     .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
     .join("\n");
+
   const formattedContext = sortedEntries
     .map(
       (e) => `
@@ -96,7 +184,7 @@ CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
 TITLE: ${e.title}
 ENTRY_TEXT:
 ${cleanHtmlToText(e.bodyHtml)}
-`
+`,
     )
     .join("\n\n--- ENTRY BREAK ---\n\n");
 
@@ -104,79 +192,73 @@ ${cleanHtmlToText(e.bodyHtml)}
 User Query:
 "${query}"
 
-You are searching the user's saved diary entries.
+You are searching the user's saved diary entries below.
+
+SEARCH RULES (be GENEROUS, not strict):
+- Search across TITLE, ENTRY_TEXT, and dates.
+- Match names case-insensitively (e.g. "Alex", "alex", "ALEX" are the same).
+- Match partial names too (e.g. "Sam" should match "Samantha", "Sammy").
+- Understand Hinglish + English synonyms:
+  * samundar / beach / sea / ocean / waves
+  * dost / friend / yaar / buddy
+  * kaam / office / work / job / project / meeting
+  * clg / college / school / padhai / study / exam
+  * pyaar / love / crush / girlfriend / boyfriend
+  * udaas / sad / depressed / down / low
+  * khush / happy / glad / excited
+  * gym / workout / exercise / fitness
+- If user mentions a person's name, find ANY entry that contains that name (full or partial).
+- If user asks "when did I…", give the matching date(s).
+- If the query is vague (e.g. "Alex"), summarize what you found about that subject.
+
+DATE OUTPUT:
+- Only use dates from this allowed list:
+${allowedDateList}
+- Format every date you mention exactly as [Nth month yyyy] (e.g. [3rd july 2026]).
+
+ANSWER STYLE:
+- Warm, direct, specific.
+- If one entry matches, give one clear answer with its clickable date.
+- If multiple match, list up to 3 strongest with their dates and a short reason.
+- If truly nothing matches, say: "I couldn't find anything about that in your saved entries. Try a different keyword or check your spelling."
+- NEVER return an empty answer. Always reply with at least one full sentence.
+
 CRITICAL RULES:
 - Answer ONLY using the saved entries below.
 - Never invent dates, events, or details.
 - You may ONLY mention dates from this allowed list:
 ${allowedDateList}
 
-DATE OUTPUT RULE:
-- Whenever you mention a date, copy the exact CLICKABLE_DATE format from the entry.
-- Example: [1st july 2026]
-- Do NOT output fake dates.
-- Do NOT use a date unless the matching entry clearly supports the answer.
-
-LANGUAGE UNDERSTANDING:
-- Understand English, Hinglish, Roman Hindi, slang, abbreviations.
-- Examples:
-- "samundar", "beach", "sea", "ocean" can be related.
-- "dost", "friend", "yaar" can be related.
-- "kaam", "office", "project", "work" can be related.
-- "clg", "college", "padhai", "study" can be related.
-
-ANSWER STYLE:
-- If one exact entry matches, give one direct answer with its clickable date.
-- If multiple entries truly match, list up to 3 strongest matches.
-- If no exact match exists, say: "I couldn't find that in your saved entries."
-- ALWAYS respond with at least one full sentence — never return an empty string.
-
 SAVED JOURNAL ENTRIES:
-
 ${formattedContext}
-`;
+`.trim();
 
   try {
-    const response = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
+    const data = await aiQueue.enqueue(`search:${query}`, () =>
+      callGroq({
         model: MODEL_NAME,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt },
         ],
-        temperature: 0.2,
-        max_tokens: 500,
+        temperature: 0.3,
+        max_tokens: 600,
       }),
-    });
+    );
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      return `AI Response Error (${response.status}): ${errData?.error?.message || "Failed to communicate with Groq servers."}`;
-    }
-
-    const data = await response.json();
     const content = data?.choices?.[0]?.message?.content;
-
-    // Robust fallback: if for any reason the model returned empty content,
-    // surface a friendly explanation instead of showing a blank box.
     if (typeof content !== "string" || content.trim().length === 0) {
       return "I couldn't extract a confident answer from your entries for that query. Try rephrasing with a different keyword or a date hint.";
     }
-
     return content.trim();
-  } catch (error) {
+  } catch (error: any) {
     console.error("Groq AI Error:", error);
-    return "Failed to dispatch request. Check your internet connection or browser console logs.";
+    return `AI search failed: ${error?.message || "check your internet connection or API key."}`;
   }
 }
 
 /* ==========================================================================
-   2. AI DYNAMIC WRITING ASSISTANT
+   2) WRITING ASSISTANT — queued, retries built in
    ========================================================================== */
 export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<string> {
   if (!API_KEY || entries.length === 0) {
@@ -186,10 +268,12 @@ export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<s
   const formattedContext = recentEntries
     .map((e) => `[Date: ${e.date}]\nEntry: ${cleanHtmlToText(e.bodyHtml)}`)
     .join("\n\n---\n\n");
+
   const prompt = `
 You are an emotionally intelligent journaling companion.
+
 Read the journal excerpts (old + recent). Think privately about:
-- What's the strongest recurring theme right now?
+- What’s the strongest recurring theme right now?
 - What is the most emotionally relevant part in the newest entries?
 - What detail is clearly present in the excerpts (person/place/event/feeling)?
 
@@ -207,60 +291,54 @@ Hard output rules (follow exactly):
 
 JOURNAL EXCERPTS:
 ${formattedContext}
-`;
+`.trim();
 
   try {
-    const response = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
+    const data = await aiQueue.enqueue(`assist:${recentEntries[recentEntries.length - 1]?.date || "x"}`, () =>
+      callGroq({
         model: MODEL_NAME,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: prompt },
         ],
         temperature: 0.85,
+        max_tokens: 80,
       }),
-    });
-    if (!response.ok) return "How was your day today? Feel free to write about what's going on.";
-    const data = await response.json();
+    );
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string" || content.trim().length === 0) {
-      return "How was your day today? Feel free to write about what's going on.";
+      return "What feeling has been quietly running under your day today?";
     }
     return content.trim();
-  } catch (error) {
-    return "How was your day today? Feel free to write about what's going on.";
+  } catch {
+    return "What feeling has been quietly running under your day today?";
   }
 }
 
 /* ==========================================================================
-   3. LEGACY TAG GENERATOR (kept so old saves still work — but the UI no
-   longer auto-attaches tags. The new manual #tag system replaces it.)
+   3) LEGACY TAG GENERATOR (still queued)
    ========================================================================== */
 export async function generateAITags(title: string, bodyHtml: string): Promise<string[]> {
   if (!API_KEY) return [];
   const prompt = `
-Read this journal entry and extract 3-7 short, meaningful topic tags (people, places, themes, emotions, activities).
+Read this journal entry and extract 3-7 short topic tags.
 Title: ${title}
 Body: ${cleanHtmlToText(bodyHtml)}
-Rules: lowercase, single words or short phrases, no #, no generic words like "day" or "thing".
-Output ONLY a comma-separated list.`;
+Rules: lowercase, single words/short phrases, no #, no generic words like "day" or "thing".
+Output ONLY a comma-separated list.`.trim();
+
   try {
-    const res = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
-      body: JSON.stringify({
+    const data = await aiQueue.enqueue(null, () =>
+      callGroq({
         model: MODEL_NAME,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: prompt }],
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
         temperature: 0.3,
+        max_tokens: 100,
       }),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
+    );
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string") return [];
     return content
@@ -274,12 +352,7 @@ Output ONLY a comma-separated list.`;
 }
 
 /* ==========================================================================
-   4. EMOTION ASSESSMENT — human-aware rewrite
-
-   The previous rule-based label was too generic ("Reflective & Introspective"
-   for nearly everything negative). This new prompt forces the model to think
-   like an actual person reading the entry: name the dominant emotion, not a
-   vibe category. Examples below show the full emotional range we want.
+   4) EMOTION ASSESSMENT — human-aware, queued, retried, robust
    ========================================================================== */
 export async function assessEntryEmotion(input: {
   title?: string;
@@ -290,27 +363,29 @@ export async function assessEntryEmotion(input: {
 
   const cleanText = cleanHtmlToText(input.bodyHtml);
   const title = input.title?.trim() || "Untitled";
-
   if (!cleanText && !title) return "Neutral";
+
+  // Fast heuristic so we ALWAYS show something useful even if the AI fails
+  const fallbackLabel = quickHeuristicEmotion(`${title} ${cleanText}`);
 
   const prompt = `
 You are an emotionally intelligent friend reading someone's private diary.
-Ekansh writes in casual English, Hinglish, and Roman Hindi (e.g. "she broke up with me", "bahut udaas hu", "aaj mood off tha").
+The writer uses casual English, Hinglish, and Roman Hindi (e.g. "she broke up with me", "bahut udaas hu", "aaj mood off tha", "soo sad", "khush hu").
 
-Read the entry carefully and identify the ACTUAL dominant emotion the writer is feeling.
-Not the topic, not the activity — the FEELING.
+Read the entry carefully. Name the ACTUAL dominant emotion the writer is feeling.
+NOT the topic, NOT the activity — the FEELING underneath.
 
-Rules:
-- Output EXACTLY ONE short label, 2 to 5 words.
-- The label must describe a real human emotion, not a literary vibe.
-- Be specific. "Sad and heartbroken" beats "Reflective & Introspective".
-- Capture nuance: mixed feelings, intensity, energy level.
-- DO NOT say "Reflective & Introspective" unless the entry is genuinely introspective with no stronger emotion.
-- DO NOT say "Neutral" or "Balanced" unless the entry is truly emotionally flat.
-- DO NOT explain, give advice, or output JSON.
+CRITICAL RULES:
+- Output EXACTLY ONE label, 2 to 5 words.
+- It MUST be a real human emotion (sad, heartbroken, angry, excited, anxious, lonely, happy, jealous, proud, ashamed, hopeful, etc).
+- Be specific and honest. If someone wrote "she broke up with me, i am so sad" → "Heartbroken and devastated", NOT "Reflective".
+- NEVER output "Reflective & Introspective" unless there is genuinely no emotion stronger than calm reflection.
+- NEVER output "Neutral" or "Balanced" unless the entry is truly flat.
+- No JSON, no quotes, no explanation. Just the label.
 
-Examples of GOOD labels (range of emotions):
+GOOD EXAMPLES:
 - Heartbroken and empty
+- Crushed and lonely
 - Angry and betrayed
 - Anxious and overwhelmed
 - Quietly devastated
@@ -335,6 +410,8 @@ Examples of GOOD labels (range of emotions):
 - Drained and unmotivated
 - Happy and silly
 - Furious and disrespected
+- Jealous and insecure
+- Guilty and conflicted
 
 Diary date: ${input.date || "unknown"}
 Title: ${title}
@@ -342,44 +419,74 @@ Entry:
 ${cleanText}
 
 Your answer (one short label, nothing else):
-`;
+`.trim();
 
   try {
-    const response = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
+    const data = await aiQueue.enqueue(`assess:${input.date}:${title}`, () =>
+      callGroq({
         model: MODEL_NAME,
         messages: [
           {
             role: "system",
             content:
-              "You are an emotionally precise classifier. Output only a short, specific human emotion label — never generic categories like 'Reflective & Introspective' or 'Balanced'.",
+              "You are an emotionally precise classifier. Output only a short, specific human emotion label (2-5 words). Never generic categories like 'Reflective & Introspective' or 'Balanced'.",
           },
           { role: "user", content: prompt },
         ],
-        temperature: 0.55,
+        temperature: 0.5,
         max_tokens: 30,
       }),
-    });
-    if (!response.ok) return "AI unavailable";
-    const data = await response.json();
-    const raw = data?.choices?.[0]?.message?.content;
+    );
 
+    const raw = data?.choices?.[0]?.message?.content;
     if (typeof raw !== "string" || raw.trim().length === 0) {
-      return "Processing emotion…";
+      return fallbackLabel;
     }
 
-    return raw
+    const cleaned = raw
       .trim()
       .replace(/^["'`]+|["'`.]+$/g, "")
       .split("\n")[0]
       .replace(/^label:\s*/i, "")
       .slice(0, 70);
+
+    // Reject obviously bad outputs (the old generic vibe)
+    if (/^reflective\s*&?\s*introspective$/i.test(cleaned)) return fallbackLabel;
+    if (!cleaned) return fallbackLabel;
+    return cleaned;
   } catch {
-    return "AI unavailable";
+    return fallbackLabel;
   }
+}
+
+/* Quick keyword-based emotion guess (used as resilient fallback). */
+function quickHeuristicEmotion(text: string): string {
+  const t = text.toLowerCase();
+  const has = (...words: string[]) => words.some((w) => t.includes(w));
+
+  if (has("broke up", "breakup", "break up", "she left", "he left", "heartbroken", "heart broken", "dumped"))
+    return "Heartbroken and empty";
+  if (has("so sad", "soo sad", "very sad", "udaas", "depressed", "crying", "rona", "tears"))
+    return "Sad and heavy";
+  if (has("angry", "furious", "gussa", "pissed", "rage", "hate"))
+    return "Angry and tense";
+  if (has("anxious", "anxiety", "panic", "nervous", "scared", "darr"))
+    return "Anxious and on edge";
+  if (has("lonely", "alone", "akela", "no one"))
+    return "Lonely and quiet";
+  if (has("excited", "can't wait", "cant wait", "yay", "amazing", "awesome", "best day"))
+    return "Excited and buzzing";
+  if (has("happy", "khush", "great day", "wonderful", "smiled", "smiling", "joyful"))
+    return "Happy and light";
+  if (has("tired", "exhausted", "drained", "burnt out", "thak gaya"))
+    return "Drained and tired";
+  if (has("grateful", "thankful", "blessed", "shukar"))
+    return "Grateful and grounded";
+  if (has("proud", "achieved", "accomplished", "finally did"))
+    return "Proud and relieved";
+  if (has("confused", "don't know", "dont know", "samajh nahi"))
+    return "Confused and uncertain";
+  if (has("missed", "miss her", "miss him", "missing"))
+    return "Tender and missing them";
+  return "Processing emotions";
 }

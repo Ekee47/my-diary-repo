@@ -1078,25 +1078,26 @@ function EntryEditor({
       setAiAssessment("");
       return;
     }
+
     const cached = assessmentCache[dateKey];
-    if (cached && entry && plain === htmlToText(entry.bodyHtml).trim() && title === entry.title) {
-      setAiAssessment(cached);
-      return;
-    }
+    if (cached) setAiAssessment(cached); // show cache instantly
+
     const handle = setTimeout(async () => {
       setIsAssessing(true);
       try {
         const label = await assessEntryEmotion({ title, bodyHtml, date: dateKey });
-        if (label && label.trim().length > 0) {
+        // Only overwrite if we got a real human label (not the unavailable sentinel)
+        if (label && label.trim() && label !== "AI unavailable") {
           setAiAssessment(label);
           onUpdateAssessmentCache(dateKey, label);
         }
       } finally {
         setIsAssessing(false);
       }
-    }, 1200);
+    }, 1500); // 1.5s debounce while typing
+
     return () => clearTimeout(handle);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bodyHtml, title, dateKey]);
 
   async function triggerAIPrompt() {
@@ -1369,22 +1370,18 @@ function ViewEntryScreen({
           <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">
             {entry.title}
           </h1>
-          <div
-            className="diary-prose min-h-[18rem] text-base leading-8 text-slate-200"
-            dangerouslySetInnerHTML={{ __html: sanitizeHtml(entry.bodyHtml) }}
-          />
           {tags.length > 0 ? (
-            <div className="pt-2">
-              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
-              <div className="flex flex-wrap gap-1.5">
-                {tags.map((tag) => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200">
-                    #{tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
+  <div className="pt-2">
+    <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
+    <div className="flex flex-wrap gap-1.5">
+      {tags.map((tag) => (
+        <span key={tag} className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200">
+          #{tag}
+        </span>
+      ))}
+    </div>
+  </div>
+) : null}
         </div>
       </div>
       <aside className="space-y-4">
@@ -1968,6 +1965,10 @@ function AIIntelligenceView({
   const [isSearchingAI, setIsSearchingAI] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  const lastSearchAtRef = useRef(0);
+  const SEARCH_DEBOUNCE_MS = 1000;
+
+
   // Manual tag cloud — aggregated from #tags across all entries
   const globalTagCloud = useMemo(() => {
     const map: Record<string, number> = {};
@@ -2027,13 +2028,22 @@ function AIIntelligenceView({
   async function handleAISubmit(e: FormEvent) {
     e.preventDefault();
     if (!searchQuery.trim()) return;
+
+    // Debounce: ignore rapid resubmits within 1s
+    const now = Date.now();
+    if (now - lastSearchAtRef.current < SEARCH_DEBOUNCE_MS) {
+      setAiAnswer("Please wait a moment before searching again...");
+      return;
+    }
+    lastSearchAtRef.current = now;
+
+    if (isSearchingAI) return;            // lock — prevents queue collision
     setIsSearchingAI(true);
     setSearchError(null);
     setAiAnswer("Thinking through your timeline memory...");
+
     try {
       const response = await smartAISearch(searchQuery, entries);
-      // Guarantee something always shows — if the response is empty for any reason
-      // we fall back to a clear, helpful message instead of a blank block.
       if (!response || response.trim().length === 0) {
         setAiAnswer("I couldn't pull up a clear answer for that query. Try rephrasing with a keyword or a date hint.");
         setSearchError("Empty response from the AI.");
@@ -2041,12 +2051,13 @@ function AIIntelligenceView({
         setAiAnswer(response);
       }
     } catch (err) {
-      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
+      setAiAnswer("AI is busy or temporarily unavailable. Please wait a few seconds and try again.");
       setSearchError(getErrorMessage(err));
     } finally {
       setIsSearchingAI(false);
     }
   }
+
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
@@ -2059,7 +2070,12 @@ function AIIntelligenceView({
           </p>
         </div>
         <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
-          <span className="text-xl text-slate-500" aria-hidden="true">⌕</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              className="text-slate-400 shrink-0" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.5-3.5" />
+</svg>
           <input
             type="text"
             value={searchQuery}
@@ -2444,6 +2460,7 @@ function MoodPieChart({
           <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
           {moods.map((m) => {
             const value = distribution[m.id] || 0;
+            if (value === 0) return null;              // ✅ no entries → no dot
             const fraction = value / normalized;
             const dash = 2 * Math.PI * radius;
             const seg = dash * fraction;
@@ -2457,7 +2474,7 @@ function MoodPieChart({
                 r={radius}
                 stroke={m.color}
                 strokeWidth={stroke}
-                strokeLinecap="round"
+                strokeLinecap="butt"                   // ✅ no round cap = no ghost dot
                 fill="none"
                 strokeDasharray={`${seg} ${dash - seg}`}
                 strokeDashoffset={offset}

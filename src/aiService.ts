@@ -261,58 +261,87 @@ ${formattedContext}
    2) WRITING ASSISTANT — queued, retries built in
    ========================================================================== */
 export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<string> {
-  if (!API_KEY || entries.length === 0) {
-    return "What's on your mind today? Tell me how your day went.";
-  }
-  const recentEntries = entries.slice(-5);
-  const formattedContext = recentEntries
-    .map((e) => `[Date: ${e.date}]\nEntry: ${cleanHtmlToText(e.bodyHtml)}`)
-    .join("\n\n---\n\n");
+ if (!API_KEY || entries.length === 0) {
+ return "What's been taking up the most space in your mind recently?";
+ }
 
-  const prompt = `
+ const now = new Date();
+ const twelveMonthsAgo = new Date(now);
+ twelveMonthsAgo.setMonth(now.getMonth() - 12);
+
+ const sortedEntries = entries
+ .slice()
+ .sort((a, b) => a.date.localeCompare(b.date));
+
+ const recentEnoughEntries = sortedEntries.filter((entry) => {
+ const d = new Date(entry.date);
+ return !Number.isNaN(d.getTime()) && d >= twelveMonthsAgo;
+ });
+
+ // If there is nothing from the last 12 months, don't drag up 1-2 year old memories.
+ if (recentEnoughEntries.length === 0) {
+ return "What's been taking up the most space in your mind recently?";
+ }
+
+ // Prefer newest entries only.
+ const recentEntries = recentEnoughEntries.slice(-8);
+
+ const formattedContext = recentEntries
+ .map((e) => `[Date: ${e.date}]\nTitle: ${e.title}\nEntry: ${cleanHtmlToText(e.bodyHtml)}`)
+ .join("\n\n---\n\n");
+
+ const prompt = `
 You are an emotionally intelligent journaling companion.
 
-Read the journal excerpts (old + recent). Think privately about:
-- What’s the strongest recurring theme right now?
-- What is the most emotionally relevant part in the newest entries?
-- What detail is clearly present in the excerpts (person/place/event/feeling)?
+Use ONLY the recent journal excerpts below.
+These entries are from roughly the last 6-12 months.
 
-Hard output rules (follow exactly):
-- Output EXACTLY ONE line.
-- Question ends with a question mark. it should be an interrogative sentence, and if assertion is there then should be started after 1 line gap.
-- Start with "QUESTION:" and maybe "ASSERTION:".
-- Question length: 5-20 words.
-- Assertion length: 30-50 words.
-- The text must be ONLY the question and maybe the assertion (no extra labels beyond the prefix).
-- It must be answerable from the excerpts (no random topics).
-- Use Hinglish only if the excerpts use Hinglish vibe; otherwise use English.
+VERY IMPORTANT:
+- Do NOT ask about very old events, people, or memories unless they are clearly mentioned inside these recent excerpts.
+- Prefer what feels emotionally active right now.
+- If an old memory appears in a recent entry, you may ask about it because it is currently relevant.
+- Do not randomly bring up 1-2 year old topics.
+
+Output rules:
+- Output EXACTLY ONE question.
+- Question must end with a question mark.
+- 5-20 words.
+- Make it specific to the recent excerpts.
+- Use Hinglish only if the excerpts use Hinglish.
 - Do NOT mention you are an AI.
-- Never use generic prompts like "How was your day?".
+- Avoid generic prompts like "How was your day?"
 
-JOURNAL EXCERPTS:
+RECENT JOURNAL EXCERPTS:
 ${formattedContext}
 `.trim();
 
-  try {
-    const data = await aiQueue.enqueue(`assist:${recentEntries[recentEntries.length - 1]?.date || "x"}`, () =>
-      callGroq({
-        model: MODEL_NAME,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.85,
-        max_tokens: 80,
-      }),
-    );
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || content.trim().length === 0) {
-      return "What feeling has been quietly running under your day today?";
-    }
-    return content.trim();
-  } catch {
-    return "What feeling has been quietly running under your day today?";
-  }
+ try {
+ const data = await aiQueue.enqueue(`assist:${recentEntries[recentEntries.length - 1]?.date || "x"}`, () =>
+ callGroq({
+ model: MODEL_NAME,
+ messages: [
+ { role: "system", content: SYSTEM_PROMPT },
+ { role: "user", content: prompt },
+ ],
+ temperature: 0.75,
+ max_tokens: 80,
+ }),
+ );
+
+ const content = data?.choices?.[0]?.message?.content;
+
+ if (typeof content !== "string" || content.trim().length === 0) {
+ return "What's been feeling most present in your life lately?";
+ }
+
+ return content
+ .trim()
+ .replace(/^QUESTION:\s*/i, "")
+ .split("\n")[0]
+ .trim();
+ } catch {
+ return "What's been feeling most present in your life lately?";
+ }
 }
 
 /* ==========================================================================

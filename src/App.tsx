@@ -1,11 +1,12 @@
+// src/App.tsx
+
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { cn } from "./utils/cn";
 // Import the multi-device cloud intelligence layer
-import { smartAISearch, generateAICustomQuestion, generateAITags } from "./aiService";
-
+import { smartAISearch, generateAICustomQuestion, assessEntryEmotion } from "./aiService";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
-type Screen = "home" | "entry" | "year" | "ai";
+type Screen = "home" | "entry" | "view" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
 
 type MoodOption = {
@@ -35,9 +36,7 @@ type DiaryEntry = {
   attachments: Attachment[];
   createdAt: string;
   updatedAt: string;
-  aiTags?: string[];
 };
-
 
 type VaultData = {
   version: 1;
@@ -88,6 +87,7 @@ const DEFAULT_CONFIG: GitHubConfig = {
   path: "data/moonlit-diary-vault.json",
   token: "",
 };
+
 const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB limit
 
 const MOODS: MoodOption[] = [
@@ -107,12 +107,17 @@ const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const SEMANTIC_DICTIONARY: Record<string, string[]> = {
-  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
-  alex: ["friend", "buddy", "partner", "mate", "brother"],
-  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
-  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
-  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
-  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
+  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island", "samundar", "pani", "beachside"],
+  alex: ["friend", "buddy", "partner", "mate", "brother", "dost", "yaar"],
+  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client", "job", "kaam"],
+  fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift", "cardio"],
+  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled", "khush"],
+  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure", "tension", "pareshan"],
+  love: ["romantic", "crush", "pyaar", "date", "heart", "relationship"],
+  family: ["home", "parents", "mom", "dad", "mummy", "papa", "bhai", "sister", "ghar"],
+  food: ["khana", "dinner", "lunch", "breakfast", "restaurant", "cafe"],
+  travel: ["trip", "journey", "vacation", "flight", "drive", "outing", "ghoomna"],
+  sleep: ["sleepy", "sleep", "nap", "rest", "neend", "thaka"],
 };
 
 interface AIResponseRendererProps {
@@ -125,42 +130,40 @@ interface AIResponseRendererProps {
  */
 function parseReadableDateToISO(readableDate: string): string | null {
   const clean = readableDate.toLowerCase().trim();
-  
-  // Match patterns like "1st july 2026", "2nd march 2025", "15th december 2024"
+
   const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
   if (!match) {
-    // Try matching with just space (without ordinal suffix)
     const simpleMatch = clean.match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/);
     if (!simpleMatch) return null;
     const day = simpleMatch[1].padStart(2, '0');
     const monthName = simpleMatch[2];
     const year = simpleMatch[3];
-    
+
     const months: Record<string, string> = {
-      january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
+      january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03',
       april: '04', apr: '04', may: '05', june: '06', jun: '06',
-      july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
+      july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09',
       october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
     };
-    
+
     const month = months[monthName];
     if (!month) return null;
     const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
     const dayNum = Math.min(parseInt(day), maxDays);
     return `${year}-${month}-${String(dayNum).padStart(2, '0')}`;
   }
-  
+
   const day = match[1].padStart(2, '0');
   const monthName = match[2];
   const year = match[3];
-  
+
   const months: Record<string, string> = {
-    january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
+    january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03',
     april: '04', apr: '04', may: '05', june: '06', jun: '06',
-    july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
+    july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09',
     october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
   };
-  
+
   const month = months[monthName];
   if (!month) return null;
   const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
@@ -171,60 +174,61 @@ function parseReadableDateToISO(readableDate: string): string | null {
 /**
  * Renders AI response text, turning readable date strings into clickable system buttons
  */
-export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIResponseRendererProps & { allowedDates?: Set<string> }) {
-  // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
-  const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
-  
+export function AIResponseRenderer({
+  text,
+  onDateClick,
+  allowedDates,
+}: AIResponseRendererProps & { allowedDates?: Set<string> }) {
+  const dateRegex = /\[?(\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+\s+\d{4})\]?/gi;
+
   const parts: ReactNode[] = [];
   let lastIndex = 0;
-  let match;
+  let match: RegExpExecArray | null;
   let keyIndex = 0;
 
   while ((match = dateRegex.exec(text)) !== null) {
-    // Add text before the match
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex, match.index)}</span>);
     }
-    
-    const rawReadableDate = match[0];
-    const isoDate = parseReadableDateToISO(rawReadableDate);
-    
+
+    const fullMatch = match[0];
+    const readableDate = match[1];
+    const isoDate = parseReadableDateToISO(readableDate);
+
     if (isoDate && (!allowedDates || allowedDates.has(isoDate))) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
           onClick={() => onDateClick(isoDate)}
-          className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors cursor-pointer"
+          className="inline font-bold text-cyan-400 hover:text-cyan-300 hover:underline transition-colors cursor-pointer"
           style={{
-            background: 'none',
-            border: 'none',
+            background: "none",
+            border: "none",
             padding: 0,
-            font: 'inherit',
-            color: '#22d3ee',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            textDecoration: 'underline'
+            font: "inherit",
+            color: "#22d3ee",
+            fontWeight: "bold",
+            cursor: "pointer",
+            textDecoration: "underline",
           }}
           title={`Click to open entry for ${isoDate}`}
         >
-          {rawReadableDate}
+          {fullMatch}
         </button>
       );
     } else {
-      parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
+      parts.push(<span key={`date-${keyIndex++}`}>{fullMatch}</span>);
     }
-    
-    lastIndex = match.index + match[0].length;
+
+    lastIndex = match.index + fullMatch.length;
   }
 
-  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex)}</span>);
   }
 
   return <>{parts.length > 0 ? parts : text}</>;
 }
-
 
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
@@ -241,7 +245,6 @@ export default function App() {
   const [editingDate, setEditingDate] = useState(todayKey);
   const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
   const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
-  const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
   const [lightboxAttachments, setLightboxAttachments] = useState<Attachment[] | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState(0);
 
@@ -319,6 +322,7 @@ export default function App() {
 
       const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
       const nextVault = await openVaultFile(parsed, passphrase);
+
       setVault(nextVault);
       setRemoteSha(remote.sha);
       setSyncState("ready");
@@ -370,9 +374,7 @@ export default function App() {
   }
 
   async function saveEntry(entry: DiaryEntry) {
-    // Clear draft when entry is explicitly saved
     clearDraft(entry.date);
-    
     const entries = vault.entries.filter((item) => item.date !== entry.date);
     const nextVault: VaultData = {
       ...vault,
@@ -380,37 +382,29 @@ export default function App() {
       entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
     };
 
-    // Optimistically update the local vault state immediately so UI reflects the save
     setVault(nextVault);
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
 
-    // Perform the actual GitHub save in the background
-    // Don't await here - let it complete in background while user can navigate
     persistVault(nextVault, `Save diary entry for ${entry.date}`).catch((error) => {
       console.error("Background save failed:", error);
-      // Error is already displayed via syncError/syncState
     });
   }
 
   async function deleteEntry(dateKey: string) {
-    // Clear draft when entry is deleted
     clearDraft(dateKey);
-    
     const nextVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
       entries: vault.entries.filter((entry) => entry.date !== dateKey),
     };
 
-    // Optimistically update and navigate
     setVault(nextVault);
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
 
-    // Delete in background
     persistVault(nextVault, `Delete diary entry for ${dateKey}`).catch((error) => {
       console.error("Background delete failed:", error);
     });
@@ -447,6 +441,7 @@ export default function App() {
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#03040a] text-slate-100">
       <AmbientBackdrop />
+
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <TopBar
           syncState={syncState}
@@ -456,10 +451,7 @@ export default function App() {
             setYearView(keyToDate(selectedDate).getFullYear());
             setScreen("year");
           }}
-          onAIScreen={() => {
-            setSelectedAITag(null);
-            setScreen("ai");
-          }}
+          onAIScreen={() => setScreen("ai")}
           onNewEntry={() => openEntry(todayKey)}
           onSync={reloadVault}
           onLock={lockVault}
@@ -476,6 +468,12 @@ export default function App() {
               onSelectDate={setSelectedDate}
               onVisibleMonthChange={setVisibleMonth}
               onOpenEntry={openEntry}
+              onOpenView={(dateKey) => {
+                setEditingDate(dateKey);
+                setSelectedDate(dateKey);
+                setVisibleMonth(keyToDate(dateKey));
+                setScreen("view");
+              }}
             />
           ) : null}
 
@@ -493,6 +491,15 @@ export default function App() {
             />
           ) : null}
 
+          {screen === "view" && entryByDate.get(editingDate) ? (
+            <EntryViewer
+              dateKey={editingDate}
+              entry={entryByDate.get(editingDate)!}
+              onBack={() => setScreen("home")}
+              onOpenLightbox={openLightbox}
+            />
+          ) : null}
+
           {screen === "year" ? (
             <YearPixelsView
               year={yearView}
@@ -506,7 +513,6 @@ export default function App() {
           {screen === "ai" ? (
             <AIIntelligenceView
               entries={vault.entries}
-              initialTagFilter={selectedAITag}
               onJumpToEntry={(dateKey) => {
                 openEntry(dateKey);
               }}
@@ -543,7 +549,6 @@ function loadDraft(dateKey: string): DraftEntry | null {
     const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as DraftEntry;
-    // Only return draft if it matches the requested date
     return draft.dateKey === dateKey ? draft : null;
   } catch {
     return null;
@@ -578,6 +583,7 @@ function UnlockScreen({
   const [draftConfig, setDraftConfig] = useState(initialConfig);
   const [passphrase, setPassphrase] = useState("");
   const [rememberConfig, setRememberConfig] = useState(true);
+
   const isLoading = syncState === "loading" || syncState === "saving";
 
   function updateConfig(field: keyof GitHubConfig, value: string) {
@@ -592,13 +598,13 @@ function UnlockScreen({
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#02030a] text-slate-100">
       <AmbientBackdrop />
+
       <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-7xl items-center gap-10 px-5 py-10 lg:grid-cols-[0.95fr_1.05fr] lg:px-10">
         <section className="animate-screen-in space-y-8">
           <div className="inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-cyan-100/80 shadow-2xl shadow-cyan-950/30 backdrop-blur-xl">
             <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.9)]" />
             Encrypted GitHub file diary
           </div>
-
           <div className="space-y-5">
             <p className="text-sm uppercase tracking-[0.55em] text-fuchsia-200/50">Moonlit</p>
             <h1 className="max-w-3xl text-6xl font-semibold tracking-[-0.08em] text-white sm:text-7xl lg:text-8xl">
@@ -751,19 +757,22 @@ function TopBar({
 
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
+
         <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
           Calendar
         </button>
         <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
           <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
-          <span className="relative flex items-center gap-1">✨ AI Hub</span>
+          <span className="relative flex items-center gap-1"> AI Hub</span>
         </button>
         <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
           Year in pixels
         </button>
+
         <button type="button" onClick={onNewEntry} className="nav-button-primary">
           New entry
         </button>
+
         <button type="button" onClick={onSync} className="nav-button">
           Sync
         </button>
@@ -799,6 +808,81 @@ function SyncBadge({ state }: { state: SyncState }) {
   );
 }
 
+function MonthYearSelector({ date, onChange }: { date: Date, onChange: (d: Date) => void }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(date);
+  const yearLabel = date.getFullYear();
+
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 26 }, (_, i) => currentYear - 15 + i);
+
+  return (
+    <div className="relative z-20">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="group flex items-center gap-3 text-left transition-opacity hover:opacity-80"
+      >
+        <div>
+          <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl flex items-center gap-3">
+            {monthLabel}
+            <span className="text-2xl text-slate-500 transition-transform group-hover:translate-y-1">▼</span>
+          </h1>
+          <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
+        </div>
+      </button>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div className="absolute left-0 top-full z-20 mt-4 flex h-[240px] gap-2 rounded-[2rem] border border-white/10 bg-slate-900/95 p-4 shadow-2xl shadow-black/80 backdrop-blur-3xl animate-fade-in">
+            <div className="flex w-24 flex-col overflow-y-auto snap-y snap-mandatory rounded-2xl bg-black/40 pb-[100px] pt-[100px] [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              {months.map((m, i) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => {
+                    const nd = new Date(date);
+                    nd.setMonth(i);
+                    onChange(nd);
+                  }}
+                  className={cn(
+                    "min-h-[40px] snap-center text-lg transition-all",
+                    date.getMonth() === i ? "font-bold text-cyan-300 scale-125" : "text-slate-500 hover:text-slate-300"
+                  )}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex w-24 flex-col overflow-y-auto snap-y snap-mandatory rounded-2xl bg-black/40 pb-[100px] pt-[100px] [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              {years.map((y) => (
+                <button
+                  key={y}
+                  type="button"
+                  onClick={() => {
+                    const nd = new Date(date);
+                    nd.setFullYear(y);
+                    onChange(nd);
+                  }}
+                  className={cn(
+                    "min-h-[40px] snap-center text-lg transition-all",
+                    date.getFullYear() === y ? "font-bold text-fuchsia-300 scale-125" : "text-slate-500 hover:text-slate-300"
+                  )}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function HomeView({
   entryByDate,
   selectedDate,
@@ -806,6 +890,7 @@ function HomeView({
   onSelectDate,
   onVisibleMonthChange,
   onOpenEntry,
+  onOpenView,
 }: {
   entryByDate: Map<string, DiaryEntry>;
   selectedDate: string;
@@ -813,42 +898,32 @@ function HomeView({
   onSelectDate: (dateKey: string) => void;
   onVisibleMonthChange: (date: Date) => void;
   onOpenEntry: (dateKey: string) => void;
+  onOpenView: (dateKey: string) => void;
 }) {
   const selectedEntry = entryByDate.get(selectedDate);
   const monthEntries = [...entryByDate.values()].filter((entry) => {
     const date = keyToDate(entry.date);
     return date.getFullYear() === visibleMonth.getFullYear() && date.getMonth() === visibleMonth.getMonth();
   });
-  const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
-  const yearLabel = visibleMonth.getFullYear();
 
   // Check if there's a draft for the selected date
   const hasDraft = useMemo(() => {
     const draft = loadDraft(selectedDate);
     return draft !== null && (
-      draft.title.trim() || 
-      draft.bodyHtml.trim() || 
+      draft.title.trim() ||
+      draft.bodyHtml.trim() ||
       draft.dailyWin.trim() ||
       draft.attachments.length > 0
     );
   }, [selectedDate]);
 
-  // Dynamic tag compiler for current highlighted entry
-  const entryTags = useMemo(() => {
-    if (!selectedEntry) return [];
-    return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
-  }, [selectedEntry]);
-
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="animate-screen-in rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="space-y-3">
+          <div className="space-y-4">
             <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Monthly calendar</p>
-            <div>
-              <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl">{monthLabel}</h1>
-              <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
-            </div>
+            <MonthYearSelector date={visibleMonth} onChange={onVisibleMonthChange} />
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
               Pick a day, write your entry, and the calendar marks it with the saved mood color.
             </p>
@@ -905,33 +980,27 @@ function HomeView({
             <div className="mt-5 space-y-4">
               <div className="flex flex-wrap gap-2 items-center">
                 <MoodChip mood={selectedEntry.mood} />
-                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
-                  {detectSentimentLabel(selectedEntry.bodyHtml)}
-                </span>
+                <AIAssessmentChip
+                  title={selectedEntry.title}
+                  html={selectedEntry.bodyHtml}
+                  date={selectedEntry.date}
+                  prefix=""
+                  className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20"
+                />
               </div>
+
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
                 <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
               </div>
-              
-              {entryTags.length > 0 && (
-                <div>
-                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
-                  <div className="flex flex-wrap gap-1">
-                    {entryTags.map(t => (
-                      <span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">
-                        {t.startsWith("#") ? t : `#${t}`}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
                 <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
               </div>
+
               <p className="line-clamp-4 text-sm leading-6 text-slate-400">{htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}</p>
+
               <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
                 <span>{selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}</span>
                 <span>{formatBytes(totalAttachmentBytes(selectedEntry.attachments))}</span>
@@ -941,13 +1010,10 @@ function HomeView({
             <div className="mt-5 space-y-4">
               <div className="rounded-3xl border border-amber-300/20 bg-amber-500/10 p-4">
                 <p className="text-sm text-amber-100/90 flex items-center gap-2">
-                  <span className="text-amber-300">📝</span>
+                  <span className="text-amber-300">✏️</span>
                   You have an unsaved draft for this day
                 </p>
               </div>
-              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-2 w-full nav-button-primary justify-center py-4 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-400/30 hover:from-amber-500/30 hover:to-orange-500/30">
-                Continue Editing Draft
-              </button>
             </div>
           ) : (
             <div className="mt-5 rounded-3xl border border-dashed border-white/15 bg-black/20 p-5 text-sm leading-6 text-slate-400">
@@ -955,9 +1021,26 @@ function HomeView({
             </div>
           )}
 
-          <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">
-            {selectedEntry ? "Edit entry" : hasDraft ? "Continue draft" : "Write entry"}
-          </button>
+          <div className="mt-5 space-y-3">
+            {selectedEntry ? (
+              <>
+                <button type="button" onClick={() => onOpenEntry(selectedDate)} className="w-full nav-button-primary justify-center py-4">
+                  Edit entry
+                </button>
+                <button type="button" onClick={() => onOpenView(selectedDate)} className="w-full nav-button-primary justify-center py-4">
+                  View entry
+                </button>
+              </>
+            ) : hasDraft ? (
+              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="w-full nav-button-primary justify-center py-4 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-400/30 hover:from-amber-500/30 hover:to-orange-500/30">
+                Continue Editing Draft
+              </button>
+            ) : (
+              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="w-full nav-button-primary justify-center py-4">
+                Write entry
+              </button>
+            )}
+          </div>
         </section>
 
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
@@ -1055,6 +1138,191 @@ function MonthlyCalendar({
   );
 }
 
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function AIAssessmentChip({
+  title,
+  html,
+  date,
+  prefix = "AI Assessment:",
+  className,
+}: {
+  title?: string;
+  html: string;
+  date?: string;
+  prefix?: string;
+  className?: string;
+}) {
+  const plainText = useMemo(() => htmlToText(html), [html]);
+
+  const cacheKey = useMemo(
+    () =>
+      `moonlit-ai-emotion-assessment-v1:${hashString(
+        `${date || ""}|${title || ""}|${plainText}`
+      )}`,
+    [date, title, plainText]
+  );
+
+  const [label, setLabel] = useState("Assessing…");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const trimmed = plainText.trim();
+
+    if (!trimmed || trimmed.length < 5) {
+      setLabel("Neutral");
+      return;
+    }
+
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        setLabel(cached);
+        return;
+      }
+    } catch {
+      // ignore cache errors
+    }
+
+    setLabel("Assessing…");
+
+    const timer = window.setTimeout(() => {
+      assessEntryEmotion({
+        title,
+        bodyHtml: html,
+        date,
+      })
+        .then((assessment) => {
+          if (cancelled) return;
+
+          const clean = assessment.trim() || "Neutral";
+          setLabel(clean);
+
+          try {
+            localStorage.setItem(cacheKey, clean);
+          } catch {
+            // ignore cache errors
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setLabel("AI unavailable");
+        });
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [cacheKey, title, html, date, plainText]);
+
+  return (
+    <span
+      className={
+        className ||
+        "text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20"
+      }
+      title="Generated by AI from your diary text"
+    >
+      {prefix === "" ? label : `${prefix} ${label}`}
+    </span>
+  );
+}
+
+function EntryViewer({
+  dateKey,
+  entry,
+  onBack,
+  onOpenLightbox,
+}: {
+  dateKey: string;
+  entry: DiaryEntry;
+  onBack: () => void;
+  onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
+}) {
+  const activeMood = MOOD_BY_ID[entry.mood];
+
+  return (
+    <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
+          <button type="button" onClick={onBack} className="round-button w-fit">
+            Back to calendar
+          </button>
+          <div className="text-sm font-medium text-slate-400">{formatDateLong(dateKey)}</div>
+        </div>
+
+        <h1 className="mb-8 text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">
+          {entry.title || "Untitled entry"}
+        </h1>
+
+        <div
+          className="diary-prose text-base leading-8 text-slate-200"
+          dangerouslySetInnerHTML={{ __html: entry.bodyHtml }}
+        />
+      </div>
+
+      <aside className="space-y-4">
+        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
+          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
+          <div className="mt-4 flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+            <span className="h-4 w-4 rounded-full" style={{ backgroundColor: activeMood.color, boxShadow: `0 0 18px ${activeMood.glow}` }} />
+            <div className="min-w-0 flex-1">
+              <span className="block font-medium text-white">{activeMood.label}</span>
+              <span className="block truncate text-xs text-slate-500">{activeMood.description}</span>
+            </div>
+          </div>
+        </section>
+
+        {entry.dailyWin && (
+          <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
+            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
+            <p className="mt-4 text-sm leading-6 text-slate-200">{entry.dailyWin}</p>
+          </section>
+        )}
+
+        {entry.attachments.length > 0 && (
+          <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
+            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
+            <div className="mt-4 grid gap-3">
+              {entry.attachments.map((attachment, idx) => (
+                <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
+                  <button
+                    type="button"
+                    onClick={() => onOpenLightbox(entry.attachments, idx)}
+                    className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
+                  >
+                    {attachment.type.startsWith("image/") ? (
+                      <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
+                    ) : (
+                      <video src={attachment.dataUrl} className="h-full w-full object-cover" />
+                    )}
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
+                      <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
+                        Click to view
+                      </span>
+                    </span>
+                  </button>
+                  <div className="px-4 py-3">
+                    <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </aside>
+    </section>
+  );
+}
+
 function EntryEditor({
   dateKey,
   entry,
@@ -1074,9 +1342,8 @@ function EntryEditor({
   onDelete: (dateKey: string) => Promise<void>;
   onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
 }) {
-  // Load existing draft or use entry data
   const existingDraft = useMemo(() => loadDraft(dateKey), [dateKey]);
-  
+
   const [title, setTitle] = useState(existingDraft?.title ?? entry?.title ?? "");
   const [mood, setMood] = useState<MoodId>(existingDraft?.mood ?? entry?.mood ?? "happy");
   const [bodyHtml, setBodyHtml] = useState(existingDraft?.bodyHtml ?? entry?.bodyHtml ?? "");
@@ -1087,41 +1354,25 @@ function EntryEditor({
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<string>("");
-  
+
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
   const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const computedTags = useMemo(() => {
-    const isUnchanged = entry && htmlToText(bodyHtml) === htmlToText(entry.bodyHtml) && title === entry.title;
+  const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
 
-    // If you haven't typed anything new, show the locked-in AI tags
-    if (isUnchanged && entry?.aiTags && entry.aiTags.length > 0) {
-      return entry.aiTags;
-    }
-
-    // If you are actively typing, show the fast rule-based preview
-    return extractTopicsAndTags(bodyHtml, title);
-  }, [bodyHtml, title, entry]);
-
-  // Track if we have unsaved changes compared to last draft save
-  const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments, aiTags: entry?.aiTags });
-  
-  
   useEffect(() => {
     setHasUnsavedChanges(currentDraftState !== lastSavedDraft);
   }, [currentDraftState, lastSavedDraft]);
 
-  // Initialize lastSavedDraft when existing draft or entry is loaded
   useEffect(() => {
     const initialState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
     setLastSavedDraft(initialState);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-save draft to localStorage every second when there are changes
   useEffect(() => {
     if (!hasUnsavedChanges) return;
-    
+
     autoSaveIntervalRef.current = setTimeout(() => {
       const draft: DraftEntry = {
         dateKey,
@@ -1144,7 +1395,6 @@ function EntryEditor({
     };
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, hasUnsavedChanges, currentDraftState]);
 
-  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
   async function triggerAIPrompt() {
     setAIPrompt("Consulting your timeline memory...");
     try {
@@ -1160,24 +1410,6 @@ function EntryEditor({
     setLocalError("");
     setIsWorking(true);
     try {
-      const plainBody = htmlToText(bodyHtml).trim();
-      const oldPlain = htmlToText(entry?.bodyHtml || "").trim();
-
-      let currentTags = entry?.aiTags || [];
-
-      // Only burn an API call if the text actually changed, or if it has no tags yet
-      if ((plainBody !== oldPlain || title !== entry?.title || !entry?.aiTags) && plainBody.length > 10) {
-        try {
-          const aiGenerated = await generateAITags(title.trim() || "Untitled", bodyHtml);
-          if (aiGenerated.length > 0) {
-            currentTags = aiGenerated;
-          }
-        } catch (e) {
-          console.warn("AI tagging failed, using fallback rule tags.");
-          currentTags = extractTopicsAndTags(bodyHtml, title);
-        }
-      }
-
       const now = new Date().toISOString();
       const nextEntry: DiaryEntry = {
         id: entry?.id ?? createId(),
@@ -1189,7 +1421,6 @@ function EntryEditor({
         attachments,
         createdAt: entry?.createdAt ?? now,
         updatedAt: now,
-        aiTags: currentTags,
       };
 
       await onSave(nextEntry);
@@ -1199,8 +1430,6 @@ function EntryEditor({
       setIsWorking(false);
     }
   }
-
-
 
   async function handleDelete() {
     if (!entry) return;
@@ -1218,9 +1447,7 @@ function EntryEditor({
     }
   }
 
-  // Warn user before navigating away with unsaved changes
   const handleBack = useCallback(() => {
-    // Save draft immediately before going back
     if (title.trim() || bodyHtml.trim() || dailyWin.trim() || attachments.length > 0) {
       const draft: DraftEntry = {
         dateKey,
@@ -1255,7 +1482,6 @@ function EntryEditor({
           </div>
         </div>
 
-        {/* Auto-save indicator */}
         <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
           {hasUnsavedChanges ? (
             <span className="flex items-center gap-1.5 text-amber-400/70">
@@ -1270,7 +1496,6 @@ function EntryEditor({
           )}
         </div>
 
-        {/* AI Prompt Journaling Assistant Panel widget */}
         <div className="mt-4 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
           <div className="flex items-center justify-between gap-4">
@@ -1278,9 +1503,9 @@ function EntryEditor({
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
               <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
             </div>
-            <button 
-              type="button" 
-              onClick={triggerAIPrompt} 
+            <button
+              type="button"
+              onClick={triggerAIPrompt}
               className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
             >
               Generate Prompt
@@ -1297,9 +1522,12 @@ function EntryEditor({
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
             <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
-            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
-              AI Assessment: {detectSentimentLabel(bodyHtml)}
-            </span>
+            <AIAssessmentChip
+              title={title}
+              html={bodyHtml}
+              date={dateKey}
+              className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10"
+            />
           </div>
 
           <input
@@ -1310,20 +1538,6 @@ function EntryEditor({
           />
 
           <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
-
-          {/* Extracted Topic clouds list display area */}
-          {computedTags.length > 0 && (
-            <div className="pt-2">
-              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
-              <div className="flex flex-wrap gap-1.5">
-                {computedTags.map(tag => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
-                    #{tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {localError ? <SyncError message={localError} compact /> : null}
@@ -1333,6 +1547,7 @@ function EntryEditor({
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
           <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
+
           <div className="mt-5 grid gap-2">
             {MOODS.map((item) => (
               <button
@@ -1464,11 +1679,13 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState("");
+
   const totalBytes = totalAttachmentBytes(attachments);
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files?.length) return;
+
     setError("");
 
     // Validate file sizes (500MB limit per file)
@@ -1557,6 +1774,7 @@ function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachment
                 </span>
               </span>
             </button>
+
             <div className="flex items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
@@ -1601,6 +1819,7 @@ function YearPixelsView({
   onOpenEntry: (dateKey: string) => void;
 }) {
   const months = useMemo(() => Array.from({ length: 12 }, (_, monthIndex) => new Date(year, monthIndex, 1)), [year]);
+
   const writtenDays = [...entryByDate.values()].filter((entry) => keyToDate(entry.date).getFullYear() === year).length;
 
   return (
@@ -1666,10 +1885,12 @@ function MonthPixelPanel({
         <h2 className="text-lg font-semibold text-white">{monthName}</h2>
         <span className="text-xs text-slate-500">{monthDate.getFullYear()}</span>
       </div>
+
       <div className="grid grid-cols-7 gap-2">
         {cells.map((cell) => {
           const entry = entryByDate.get(cell.dateKey);
           const mood = entry ? MOOD_BY_ID[entry.mood] : null;
+
           return (
             <button
               key={cell.dateKey}
@@ -1697,73 +1918,41 @@ function MonthPixelPanel({
    ========================================================================== */
 function AIIntelligenceView({
   entries,
-  initialTagFilter,
   onJumpToEntry,
 }: {
   entries: DiaryEntry[];
-  initialTagFilter: string | null;
   onJumpToEntry: (dateKey: string) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
   
   // States for AI response with clickable dates
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
-
-  const globalTopicCloud = useMemo(() => {
-    const frequencyMap: Record<string, number> = {};
-    entries.forEach((item) => {
-      const extracted = extractTopicsAndTags(item.bodyHtml, item.title);
-      extracted.forEach((t) => {
-        frequencyMap[t] = (frequencyMap[t] || 0) + 1;
-      });
-    });
-    return Object.entries(frequencyMap)
-      .map(([text, count]) => ({ text, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [entries]);
-
-  const expandedTerms = useMemo(() => {
-    const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (queries.length === 0) return [];
-    
-    const terms = [...queries];
-    queries.forEach(q => {
-      if (SEMANTIC_DICTIONARY[q]) {
-        terms.push(...SEMANTIC_DICTIONARY[q]);
-      }
-      Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
-        if (synonyms.includes(q) && !terms.includes(key)) {
-          terms.push(key);
-        }
-      });
-    });
-    return Array.from(new Set(terms));
-  }, [searchQuery]);
+  const allowedAIDates = useMemo(() => new Set(entries.map((e) => e.date)), [entries]);
 
   const filteredEntries = useMemo(() => {
+    const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (queries.length === 0) return entries.slice().sort((a, b) => b.date.localeCompare(a.date));
+
+    const terms: string[] = [];
+    queries.forEach(q => {
+      terms.push(q);
+      if (SEMANTIC_DICTIONARY[q]) terms.push(...SEMANTIC_DICTIONARY[q]);
+      Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
+        if (synonyms.includes(q)) terms.push(key);
+      });
+    });
+
     return entries.filter((item) => {
       const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
       const titleClean = item.title.toLowerCase();
       const dateString = item.date;
 
-      if (activeTag) {
-        const itemTags = extractTopicsAndTags(item.bodyHtml, item.title);
-        if (!itemTags.includes(activeTag)) return false;
-      }
-
-      if (expandedTerms.length > 0) {
-        return expandedTerms.some(
-          (term) =>
-            bodyClean.includes(term) ||
-            titleClean.includes(term) ||
-            dateString.includes(term)
-        );
-      }
-      return true;
+      return terms.some(
+        (term) => bodyClean.includes(term) || titleClean.includes(term) || dateString.includes(term)
+      );
     }).sort((a, b) => b.date.localeCompare(a.date));
-  }, [entries, expandedTerms, activeTag]);
+  }, [entries, searchQuery]);
 
   const emotionalDistribution = useMemo(() => {
     const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazy: 0 };
@@ -1773,8 +1962,6 @@ function AIIntelligenceView({
     return tallies;
   }, [entries]);
 
-  const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
-
   // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
   async function handleAISubmit(e: FormEvent) {
     e.preventDefault();
@@ -1782,6 +1969,7 @@ function AIIntelligenceView({
 
     setIsSearchingAI(true);
     setAiAnswer("Thinking through your timeline memory...");
+
     try {
       const response = await smartAISearch(searchQuery, entries);
       setAiAnswer(response);
@@ -1828,28 +2016,6 @@ function AIIntelligenceView({
           </button>
         </form>
 
-        {/* Dynamic expansion status indicators */}
-        {expandedTerms.length > 0 && (
-          <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
-            <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
-            {expandedTerms.map((t) => (
-              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Selected tag constraint badge overlay */}
-        {activeTag && (
-          <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
-            <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
-            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
-              Remove Filter
-            </button>
-          </div>
-        )}
-
         {/* REASONED AI RESPONSE BLOCK: Renders summary card with CLICKABLE DATES */}
         {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
@@ -1861,7 +2027,7 @@ function AIIntelligenceView({
               <AIResponseRenderer
                 text={aiAnswer}
                 onDateClick={onJumpToEntry}
-                allowedDates={useMemo(() => new Set(entries.map((e) => e.date)), [entries])}
+                allowedDates={allowedAIDates}
               />
             </p>
           </div>
@@ -1900,9 +2066,13 @@ function AIIntelligenceView({
                     </div>
                     
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-slate-500 hidden sm:inline">
-                        {detectSentimentLabel(item.bodyHtml)}
-                      </span>
+                      <AIAssessmentChip
+                        title={item.title}
+                        html={item.bodyHtml}
+                        date={item.date}
+                        prefix=""
+                        className="text-xs text-slate-500 hidden sm:inline"
+                      />
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
                     </div>
                   </button>
@@ -1926,11 +2096,11 @@ function AIIntelligenceView({
 
           <div className="pt-2 flex items-start gap-4">
             <MoodPieChart moods={MOODS} distribution={emotionalDistribution} />
-
             <div className="flex-1 space-y-2">
               {MOODS.map((m) => {
                 const count = emotionalDistribution[m.id] || 0;
                 const pct = entries.length ? (count / entries.length) * 100 : 0;
+
                 return (
                   <div key={m.id} className="flex items-center justify-between text-xs">
                     <span className="text-white font-medium flex items-center gap-2">
@@ -1943,35 +2113,6 @@ function AIIntelligenceView({
               })}
             </div>
           </div>
-        </section>
-
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
-            <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
-          </div>
-
-          {globalTopicCloud.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 pt-2">
-              {globalTopicCloud.map((tag) => (
-                <button
-                  key={tag.text}
-                  type="button"
-                  onClick={() => setActiveTag(activeTag === tag.text ? null : tag.text)}
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
-                    activeTag === tag.text
-                      ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
-                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
-                  )}
-                >
-                  #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
-          )}
         </section>
 
         <MoodLegend />
@@ -1987,51 +2128,79 @@ function MoodPieChart({
   moods: MoodOption[];
   distribution: Record<MoodId, number>;
 }) {
-  const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
-  const normalized = total || 1;
+  const activeMoods = moods.filter((m) => (distribution[m.id] || 0) > 0);
+  const total = activeMoods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
 
+  if (total === 0) {
+    return (
+      <div className="relative flex h-[150px] w-[150px] flex-shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] shadow-[0_0_40px_rgba(34,211,238,0.08)]">
+        <div className="text-center">
+          <div className="text-2xl font-semibold text-white">0</div>
+          <div className="text-[11px] text-slate-400">entries</div>
+        </div>
+      </div>
+    );
+  }
+
+  const size = 150;
+  const center = size / 2;
+  const radius = 48;
+  const stroke = 14;
+  const circumference = 2 * Math.PI * radius;
   let cumulative = 0;
-  const radius = 44;
-  const stroke = 12;
 
   return (
     <div className="relative flex-shrink-0">
-      <div className="relative">
-        <svg width={120} height={120} viewBox="0 0 120 120" className="drop-shadow">
-          <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
-          {moods.map((m) => {
-            const value = distribution[m.id] || 0;
-            const fraction = value / normalized;
-            const dash = 2 * Math.PI * radius;
-            const seg = dash * fraction;
-            const offset = dash * (1 - cumulative);
-            cumulative += fraction;
+      <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.12),transparent_65%)] blur-2xl" />
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="relative drop-shadow-[0_0_24px_rgba(34,211,238,0.08)]"
+      >
+        <circle
+          cx={center}
+          cy={center}
+          r={radius}
+          stroke="rgba(255,255,255,0.08)"
+          strokeWidth={stroke}
+          fill="none"
+        />
 
-            return (
-              <circle
-                key={m.id}
-                cx="60"
-                cy="60"
-                r={radius}
-                stroke={m.color}
-                strokeWidth={stroke}
-                strokeLinecap="round"
-                fill="none"
-                strokeDasharray={`${seg} ${dash - seg}`}
-                strokeDashoffset={offset}
-                transform="rotate(-90 60 60)"
-                style={{
-                  filter: `drop-shadow(0 0 10px ${m.glow})`,
-                }}
-              />
-            );
-          })}
-        </svg>
+        {activeMoods.map((m) => {
+          const value = distribution[m.id] || 0;
+          const fraction = value / total;
+          const segment = circumference * fraction;
+          const visibleSegment = Math.max(segment - 3, 0); // tiny gap between arcs
+          const offset = circumference * (1 - cumulative);
 
-        <div className="absolute inset-0 flex items-center justify-center flex-col text-center">
-          <div className="text-[10px] uppercase tracking-widest text-cyan-100/50">mood mix</div>
-          <div className="text-lg font-semibold text-white">{total}</div>
-          <div className="text-[10px] text-slate-400">entries</div>
+          cumulative += fraction;
+
+          return (
+            <circle
+              key={m.id}
+              cx={center}
+              cy={center}
+              r={radius}
+              stroke={m.color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              fill="none"
+              strokeDasharray={`${visibleSegment} ${circumference - visibleSegment}`}
+              strokeDashoffset={offset}
+              transform={`rotate(-90 ${center} ${center})`}
+              style={{
+                filter: `drop-shadow(0 0 10px ${m.glow})`,
+              }}
+            />
+          );
+        })}
+      </svg>
+
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="flex h-[78px] w-[78px] flex-col items-center justify-center rounded-full border border-white/10 bg-[#081019]/92 shadow-[inset_0_1px_10px_rgba(255,255,255,0.04),0_0_18px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+          <div className="text-2xl font-semibold text-white">{total}</div>
+          <div className="text-[11px] text-slate-400">entries</div>
         </div>
       </div>
     </div>
@@ -2054,7 +2223,6 @@ function MoodLegend() {
     </section>
   );
 }
-
 
 function MoodChip({ mood }: { mood: MoodId }) {
   const option = MOOD_BY_ID[mood];
@@ -2134,6 +2302,7 @@ async function encryptVault(vault: VaultData, passphrase: string): Promise<strin
   const key = await deriveVaultKey(passphrase, salt, PBKDF2_ITERATIONS);
   const plaintext = new TextEncoder().encode(JSON.stringify(vault));
   const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+
   const file: EncryptedVaultFile = {
     kind: "moonlit-diary-encrypted-vault",
     version: 1,
@@ -2207,6 +2376,7 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
   }
 
   const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
+
   if (data.content && data.encoding === "base64") {
     return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   }
@@ -2314,100 +2484,6 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
-const TAG_STOPWORDS = new Set([
-  "the","and","that","this","with","have","just","like","really","very","much","some","then","than","them","they",
-  "your","you","yours","mine","what","when","where","which","while","about","there","here","were","was","because",
-  "from","into","onto","over","under","again","still","also","even","ever","never","always","today","tomorrow",
-  "yesterday","going","gonna","wanna","feel","felt","feeling","think","thought","know","knew","want","wanted",
-  "good","bad","nice","thing","things","stuff","kind","sort","lot","lots","time","day","days","week","month","year",
-  "morning","night","evening","being","doing","done","make","made","take","took","come","came","went","need",
-  "kal","aaj","mai","main","tha","thi","hai","hain","raha","rahi","gaya","gayi","kuch","bahut","kar","karna","karke",
-  "mera","meri","tera","apna","wala","wali","yeh","woh","sab","bhi","toh","abhi","phir","aur","par","mein","hoon","tha",
-  "entry","entries","title","untitled"
-]);
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function extractTopicsAndTags(html: string, title: string): string[] {
-  const plain = htmlToText(html).trim();
-  const combinedRaw = `${title} ${title} ${plain}`.trim();
-  const combinedLower = combinedRaw.toLowerCase();
-
-  if (!combinedLower) return [];
-
-  const foundTags = new Set<string>();
-
-  const hashMatches = combinedLower.match(/#[\p{L}\w]+/gu);
-  if (hashMatches) {
-    hashMatches.forEach((match) => foundTags.add(match.replace(/^#/, "")));
-  }
-
-  const concepts: Record<string, string[]> = {
-    work: ["work", "office", "project", "meeting", "boss", "client", "deadline", "job", "kaam"],
-    study: ["study", "exam", "test", "assignment", "class", "college", "clg", "school", "padhai"],
-    fitness: ["gym", "workout", "exercise", "training", "run", "running", "cardio", "lift"],
-    coding: ["coding", "code", "bug", "deploy", "app", "developer", "programming", "software"],
-    family: ["family", "parents", "mom", "dad", "mummy", "papa", "brother", "sister", "ghar"],
-    friends: ["friend", "friends", "buddy", "dost", "yaar", "group", "hangout"],
-    love: ["love", "crush", "relationship", "date", "romantic", "pyaar", "girlfriend", "boyfriend"],
-    sleep: ["sleep", "sleepy", "nap", "rest", "neend", "insomnia"],
-    food: ["food", "khana", "breakfast", "lunch", "dinner", "restaurant", "cafe", "coffee"],
-    travel: ["trip", "travel", "journey", "flight", "vacation", "outing", "drive", "ghoomna"],
-    beach: ["beach", "ocean", "sea", "shore", "coast", "waves", "sand", "samundar"],
-    money: ["money", "salary", "paisa", "budget", "expense", "shopping", "rent"],
-    health: ["health", "sick", "doctor", "medicine", "fever", "tabiyat"],
-    music: ["music", "song", "songs", "playlist", "gaana", "concert"],
-  };
-
-  for (const [tag, words] of Object.entries(concepts)) {
-    const matched = words.some((word) => {
-      const regex = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
-      return regex.test(combinedRaw);
-    });
-    if (matched) foundTags.add(tag);
-  }
-
-  const words = combinedLower.match(/[a-z]{4,}/g) || [];
-  const freq: Record<string, number> = {};
-
-  for (const word of words) {
-    if (TAG_STOPWORDS.has(word)) continue;
-    freq[word] = (freq[word] || 0) + 1;
-  }
-
-  const keywordCandidates = Object.entries(freq)
-    .filter(([word, count]) => count >= 2 && word.length >= 4 && !foundTags.has(word))
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([word]) => word);
-
-  keywordCandidates.forEach((word) => foundTags.add(word));
-
-  const bannedTags = new Set(["water","great","thing","stuff","really","today","tomorrow","yesterday","untitled"]);
-  return Array.from(foundTags).filter((tag) => !bannedTags.has(tag)).slice(0, 8);
-}
-
-
-function detectSentimentLabel(html: string): string {
-  const plainText = htmlToText(html).toLowerCase();
-  if (!plainText || plainText.length < 5) return "Neutral Focus";
-
-  let positiveScore = 0;
-  let heavyScore = 0;
-
-  const positiveWords = ["happy", "glad", "awesome", "great", "excited", "love", "win", "good", "proud", "grateful"];
-  const heavyWords = ["stressed", "tired", "sad", "depressed", "heavy", "overwhelmed", "anxious", "angry", "worry"];
-
-  positiveWords.forEach(w => { if (plainText.includes(w)) positiveScore++; });
-  heavyWords.forEach(w => { if (plainText.includes(w)) heavyScore++; });
-
-  if (positiveScore > heavyScore) return "Energetic & Bright";
-  if (heavyScore > positiveScore) return "Reflective & Introspective";
-  return "Balanced Reflection";
-}
-
 function addMonths(date: Date, amount: number) {
   return new Date(date.getFullYear(), date.getMonth() + amount, 1);
 }
@@ -2504,12 +2580,11 @@ function formatBytes(bytes: number) {
 function filesToAttachments(files: FileList, onProgress?: (progress: string) => void): Promise<Attachment[]> {
   const fileArray = Array.from(files);
   const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
-  
-  // For large files, show progress
+
   if (totalSize > 10 * 1024 * 1024 && onProgress) {
     onProgress(`Loading ${fileArray.length} file(s)...`);
   }
-  
+
   return Promise.all(
     fileArray.map(
       (file) =>
@@ -2518,14 +2593,13 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
             reject(new Error(`${file.name} exceeds the 500MB limit.`));
             return;
           }
-          
+
           const reader = new FileReader();
-          
-          // Show progress for individual large files
+
           if (file.size > 50 * 1024 * 1024 && onProgress) {
             onProgress(`Loading ${file.name} (${formatBytes(file.size)})...`);
           }
-          
+
           reader.onload = () => {
             resolve({
               id: createId(),
@@ -2560,19 +2634,16 @@ function LightboxViewer({
   const touchStartX = useRef<number | null>(null);
   const touchEndX = useRef<number | null>(null);
 
-  // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
       if (e.key === "ArrowLeft") onPrev();
       if (e.key === "ArrowRight") onNext();
     }
-
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, onPrev, onNext]);
 
-  // Cleanup body scroll lock when unmounting
   useEffect(() => {
     document.body.style.overflow = "hidden";
     return () => {
@@ -2596,13 +2667,12 @@ function LightboxViewer({
 
     if (Math.abs(diff) > minSwipeDistance) {
       if (diff > 0) {
-        // Swiped left -> next
         onNext();
       } else {
-        // Swiped right -> prev
         onPrev();
       }
     }
+
     touchStartX.current = null;
     touchEndX.current = null;
   }
@@ -2626,7 +2696,6 @@ function LightboxViewer({
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-      {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
         <button
           type="button"
@@ -2658,7 +2727,6 @@ function LightboxViewer({
         </div>
       </div>
 
-      {/* Navigation arrows */}
       {attachments.length > 1 && (
         <>
           <button
@@ -2686,14 +2754,12 @@ function LightboxViewer({
         </>
       )}
 
-      {/* Filename at bottom */}
       <div className="absolute bottom-4 left-0 right-0 z-10 text-center px-4">
         <p className="text-white/80 text-sm truncate max-w-2xl mx-auto bg-black/50 inline-block px-4 py-2 rounded-full backdrop-blur-md">
           {currentAttachment.name} <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
         </p>
       </div>
 
-      {/* Media content */}
       <div
         className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center"
         onClick={(e) => e.stopPropagation()}

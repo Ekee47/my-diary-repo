@@ -302,6 +302,7 @@ VERY IMPORTANT:
 - Prefer what feels emotionally active right now.
 - If an old memory appears in a recent entry, you may ask about it because it is currently relevant.
 - strictly Do not randomly bring up 6-24 months old topics.
+- for the dates dont see the date the day i wrote the entry but rather go with the dates i wrote the entry in. (the date mentioned in the entry)
 
 Output rules:
 - Output EXACTLY ONE question.

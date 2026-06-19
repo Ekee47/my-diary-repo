@@ -1367,20 +1367,29 @@ function ViewEntryScreen({
               </span>
             ) : null}
           </div>
-          <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">
-            {entry.title}
-          </h1>
-          {tags.length > 0 ? (
-  <div className="pt-2">
-    <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
-    <div className="flex flex-wrap gap-1.5">
-      {tags.map((tag) => (
-        <span key={tag} className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200">
-          #{tag}
-        </span>
-      ))}
-    </div>
-  </div>
+         <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">
+ {entry.title}
+</h1>
+
+<div
+ className="diary-prose min-h-[18rem] text-base leading-8 text-slate-200"
+ dangerouslySetInnerHTML={{ __html: sanitizeHtmlWithTagChips(entry.bodyHtml) }}
+/>
+
+{tags.length > 0 ? (
+ <div className="pt-3 border-t border-white/10">
+ <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
+ <div className="flex flex-wrap gap-1.5">
+ {tags.map((tag) => (
+ <span
+ key={tag}
+ className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
+ >
+ #{tag}
+ </span>
+ ))}
+ </div>
+ </div>
 ) : null}
         </div>
       </div>
@@ -2882,6 +2891,74 @@ function sanitizeHtml(html: string) {
       element.setAttribute("rel", "noreferrer");
     }
   });
+  return template.innerHTML;
+}
+
+function sanitizeHtmlWithTagChips(html: string) {
+  const safeHtml = sanitizeHtml(html);
+  const template = document.createElement("template");
+  template.innerHTML = safeHtml;
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const parent = node.parentElement;
+
+    // Don't modify links.
+    if (parent?.closest("a")) continue;
+
+    if (/#([\p{L}\p{N}_-]+)/u.test(node.nodeValue || "")) {
+      textNodes.push(node);
+    }
+  }
+
+  textNodes.forEach((node) => {
+    const text = node.nodeValue || "";
+    const regex = /#([\p{L}\p{N}_-]+)/gu;
+    const fragment = document.createDocumentFragment();
+
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+
+      const chip = document.createElement("span");
+      chip.textContent = match[0];
+      chip.setAttribute(
+        "style",
+        [
+          "display:inline-flex",
+          "align-items:center",
+          "vertical-align:baseline",
+          "margin:0 0.1rem",
+          "padding:0.08rem 0.45rem",
+          "border-radius:9999px",
+          "border:1px solid rgba(34,211,238,0.25)",
+          "background:rgba(6,182,212,0.10)",
+          "color:rgb(165,243,252)",
+          "font-size:0.86em",
+          "font-weight:600",
+          "line-height:1.45",
+          "box-shadow:0 0 14px rgba(34,211,238,0.10)",
+        ].join(";"),
+      );
+
+      fragment.appendChild(chip);
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    node.replaceWith(fragment);
+  });
+
   return template.innerHTML;
 }
 

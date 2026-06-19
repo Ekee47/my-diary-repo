@@ -298,9 +298,10 @@ These entries are from roughly the last 6-12 months.
 
 VERY IMPORTANT:
 - Do NOT ask about very old events, people, or memories unless they are clearly mentioned inside these recent excerpts.
+- only ask about events occured in past 6 months and mostly about the recent events unless i have mentioned some old memories or names recently
 - Prefer what feels emotionally active right now.
 - If an old memory appears in a recent entry, you may ask about it because it is currently relevant.
-- Do not randomly bring up 1-2 year old topics.
+- strictly Do not randomly bring up 6-24 months old topics.
 
 Output rules:
 - Output EXACTLY ONE question.

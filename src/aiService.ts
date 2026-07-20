@@ -157,6 +157,57 @@ When mentioning a specific date, format it as: [1st july 2026] (lowercase month,
 Be direct, warm, and specific. Never waffle.
 `.trim();
 
+const SYNONYM_GROUPS: string[][] = [
+  ["samundar", "beach", "sea", "ocean", "waves"],
+  ["dost", "friend", "yaar", "buddy"],
+  ["kaam", "office", "work", "job", "project", "meeting"],
+  ["clg", "college", "school", "padhai", "study", "exam"],
+  ["pyaar", "love", "crush", "girlfriend", "boyfriend"],
+  ["udaas", "sad", "depressed", "down", "low"],
+  ["khush", "happy", "glad", "excited"],
+  ["gym", "workout", "exercise", "fitness"],
+];
+const STOPWORDS = new Set([
+  "the", "a", "an", "of", "in", "on", "at", "to", "did", "do", "does", "i", "me", "my",
+  "when", "what", "where", "who", "how", "was", "were", "is", "are", "about", "with", "and",
+]);
+
+function expandQueryTerms(query: string): string[] {
+  const words = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w));
+  const expanded = new Set(words);
+  for (const word of words) {
+    for (const group of SYNONYM_GROUPS) {
+      if (group.includes(word)) group.forEach((g) => expanded.add(g));
+    }
+  }
+  return Array.from(expanded);
+}
+
+/** Pick only the entries relevant to the query (falls back to most recent if nothing matches),
+ *  so we never ship the whole vault's text to the model in one request. */
+function pickRelevantEntries(query: string, sortedEntries: DiaryEntry[], limit = 12): DiaryEntry[] {
+  const terms = expandQueryTerms(query);
+  const scored = sortedEntries.map((entry) => {
+    const haystack = `${entry.title} ${cleanHtmlToText(entry.bodyHtml)}`.toLowerCase();
+    const score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0);
+    return { entry, score };
+  });
+  const matched = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score);
+  if (matched.length > 0) {
+    return matched.slice(0, limit).map((s) => s.entry);
+  }
+  // No keyword hit — fall back to the most recent entries so broad/vague queries still work.
+  return sortedEntries.slice(-limit);
+}
+
+function truncateForPrompt(text: string, maxChars = 700): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}…`;
+}
+
 /* ==========================================================================
    1) SMART SEARCH — much more forgiving, name/keyword aware
    ========================================================================== */
@@ -172,23 +223,28 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   }
 
   const sortedEntries = entries.slice().sort((a, b) => a.date.localeCompare(b.date));
-  const allowedDateList = sortedEntries
+  const relevantEntries = pickRelevantEntries(query, sortedEntries, 12);
+  const allowedDateList = relevantEntries
     .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
     .join("\n");
 
-  const formattedContext = sortedEntries
+  const formattedContext = relevantEntries
     .map(
       (e) => `
 ENTRY_DATE_ISO: ${e.date}
 CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
 TITLE: ${e.title}
 ENTRY_TEXT:
-${cleanHtmlToText(e.bodyHtml)}
+${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}
 `,
     )
     .join("\n\n--- ENTRY BREAK ---\n\n");
 
   const prompt = `
+This is a filtered subset of the user's saved entries, chosen because they best match the query below
+(or, if nothing matched keywords, the most recent entries as a fallback). There may be other entries
+not shown here — if nothing in this subset answers the query, say so rather than guessing.
+
 User Query:
 "${query}"
 

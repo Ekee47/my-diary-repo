@@ -2718,7 +2718,7 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: 
 }
 
 async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
-  const response = await fetch(gitHubContentUrl(config), { headers: githubHeaders(config) });
+  const response = await fetch(gitHubContentUrl(config), { headers: githubHeaders(config), cache: "no-store" });
   if (response.status === 404) return { exists: false, sha: null, text: "" };
   if (!response.ok) throw new Error(await githubErrorMessage(response));
   const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
@@ -2733,6 +2733,7 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
     // support CORS with our auth header.
     const rawResponse = await fetch(gitHubContentUrl(config), {
       headers: { ...githubHeaders(config), Accept: "application/vnd.github.raw+json" },
+      cache: "no-store",
     });
     if (!rawResponse.ok) throw new Error(await githubErrorMessage(rawResponse));
     return { exists: true, sha: data.sha, text: await rawResponse.text() };

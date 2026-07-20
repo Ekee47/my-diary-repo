@@ -19,6 +19,23 @@ import {
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
 type Screen = "home" | "entry" | "view" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
+type DriveStatus = "disconnected" | "connecting" | "connected" | "syncing" | "synced" | "error";
+
+type GoogleTokenClient = {
+  requestAccessToken: (options?: { prompt?: string }) => void;
+};
+type GoogleGlobal = {
+  accounts: {
+    oauth2: {
+      initTokenClient: (config: {
+        client_id: string;
+        scope: string;
+        callback: (response: { access_token: string; error?: string }) => void;
+      }) => GoogleTokenClient;
+      revoke: (token: string, callback: () => void) => void;
+    };
+  };
+};
 type EntryMode = "edit" | "view";
 
 type MoodOption = {
@@ -93,6 +110,10 @@ const CONFIG_STORAGE_KEY = "moonlit-diary-github-config-v1";
 const DRAFT_STORAGE_KEY = "moonlit-diary-draft-v1";
 const ASSESSMENT_CACHE_KEY = "moonlit-diary-assessment-cache-v1";
 const PBKDF2_ITERATIONS = 210_000;
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_BACKUP_FILE_NAME = "Moonlit Diary Backup.txt";
+const DRIVE_FILE_ID_STORAGE_KEY = "moonlit-diary-drive-file-id";
 
 const DEFAULT_CONFIG: GitHubConfig = {
   owner: "",
@@ -233,12 +254,100 @@ export default function App() {
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [showMonthYearPicker, setShowMonthYearPicker] = useState(false);
   const [assessmentCache, setAssessmentCache] = useState<Record<string, string>>(() => loadAssessmentCache());
+  const [driveStatus, setDriveStatus] = useState<DriveStatus>("disconnected");
+  const [driveError, setDriveError] = useState("");
+  const [driveLastSynced, setDriveLastSynced] = useState<string | null>(null);
+  const [showDrivePanel, setShowDrivePanel] = useState(false);
+  const driveTokenRef = useRef<string | null>(null);
+  const driveTokenClientRef = useRef<GoogleTokenClient | null>(null);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
     vault.entries.forEach((entry) => map.set(entry.date, entry));
     return map;
   }, [vault.entries]);
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+    let cancelled = false;
+    function tryInit() {
+      const google = (window as unknown as { google?: GoogleGlobal }).google;
+      if (!google?.accounts?.oauth2) return false;
+      driveTokenClientRef.current = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID as string,
+        scope: DRIVE_SCOPE,
+        callback: (response) => {
+          if (response.error) {
+            setDriveStatus("error");
+            setDriveError(response.error);
+            return;
+          }
+          driveTokenRef.current = response.access_token;
+          setDriveStatus("connected");
+          setDriveError("");
+        },
+      });
+      return true;
+    }
+    if (!tryInit()) {
+      const interval = window.setInterval(() => {
+        if (cancelled) return;
+        if (tryInit()) window.clearInterval(interval);
+      }, 300);
+      return () => {
+        cancelled = true;
+        window.clearInterval(interval);
+      };
+    }
+  }, []);
+
+  function connectDrive() {
+    if (!GOOGLE_CLIENT_ID) {
+      setDriveStatus("error");
+      setDriveError("Google Client ID isn't configured for this deployment yet.");
+      return;
+    }
+    if (!driveTokenClientRef.current) {
+      setDriveStatus("error");
+      setDriveError("Google sign-in is still loading — try again in a moment.");
+      return;
+    }
+    setDriveStatus("connecting");
+    setDriveError("");
+    driveTokenClientRef.current.requestAccessToken({ prompt: driveTokenRef.current ? "" : "consent" });
+  }
+
+  function disconnectDrive() {
+    const google = (window as unknown as { google?: GoogleGlobal }).google;
+    if (driveTokenRef.current && google?.accounts?.oauth2) {
+      google.accounts.oauth2.revoke(driveTokenRef.current, () => {});
+    }
+    driveTokenRef.current = null;
+    setDriveStatus("disconnected");
+    setDriveError("");
+  }
+
+  async function syncDriveBackup(nextVault: VaultData) {
+    if (!driveTokenRef.current) return;
+    setDriveStatus("syncing");
+    try {
+      const text = buildDriveBackupText(nextVault);
+      await upsertDriveBackupFile(driveTokenRef.current, text);
+      setDriveStatus("synced");
+      setDriveError("");
+      setDriveLastSynced(new Date().toISOString());
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.includes("401")) {
+        driveTokenRef.current = null;
+        setDriveStatus("disconnected");
+        setDriveError("Your Google Drive session expired — reconnect to keep backing up.");
+      } else {
+        setDriveStatus("error");
+        setDriveError(message);
+      }
+    }
+  }
 
   async function unlockVault(nextConfig: GitHubConfig, nextPassphrase: string, rememberConfig: boolean) {
     const cleanedConfig = normalizeConfig(nextConfig);
@@ -356,9 +465,11 @@ export default function App() {
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
-    persistVault(nextVault, `Save diary entry for ${entry.date}`).catch((error) => {
-      console.error("Background save failed:", error);
-    });
+    persistVault(nextVault, `Save diary entry for ${entry.date}`)
+      .then(() => syncDriveBackup(nextVault))
+      .catch((error) => {
+        console.error("Background save failed:", error);
+      });
   }
 
   async function deleteEntry(dateKey: string) {
@@ -372,9 +483,11 @@ export default function App() {
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
-    persistVault(nextVault, `Delete diary entry for ${dateKey}`).catch((error) => {
-      console.error("Background delete failed:", error);
-    });
+    persistVault(nextVault, `Delete diary entry for ${dateKey}`)
+      .then(() => syncDriveBackup(nextVault))
+      .catch((error) => {
+        console.error("Background delete failed:", error);
+      });
   }
 
   function openEntry(dateKey: string) {
@@ -428,6 +541,8 @@ export default function App() {
           onNewEntry={() => openEntry(todayKey)}
           onSync={reloadVault}
           onLock={lockVault}
+          driveStatus={driveStatus}
+          onOpenDrivePanel={() => setShowDrivePanel(true)}
         />
         {syncError ? <SyncError message={syncError} /> : null}
         <main className="flex-1 pb-8">
@@ -512,6 +627,18 @@ export default function App() {
             setShowMonthYearPicker(false);
           }}
           onCancel={() => setShowMonthYearPicker(false)}
+        />
+      ) : null}
+      {showDrivePanel ? (
+        <DriveBackupPanel
+          status={driveStatus}
+          error={driveError}
+          lastSynced={driveLastSynced}
+          configured={Boolean(GOOGLE_CLIENT_ID)}
+          onConnect={connectDrive}
+          onDisconnect={disconnectDrive}
+          onSyncNow={() => syncDriveBackup(vault)}
+          onClose={() => setShowDrivePanel(false)}
         />
       ) : null}
     </div>
@@ -640,6 +767,8 @@ function TopBar({
   onNewEntry,
   onSync,
   onLock,
+  driveStatus,
+  onOpenDrivePanel,
 }: {
   syncState: SyncState;
   currentScreen: Screen;
@@ -649,6 +778,8 @@ function TopBar({
   onNewEntry: () => void;
   onSync: () => void;
   onLock: () => void;
+  driveStatus: DriveStatus;
+  onOpenDrivePanel: () => void;
 }) {
   return (
     <header className="mb-5 flex flex-col gap-4 rounded-[1.8rem] border border-white/10 bg-white/[0.035] px-4 py-4 shadow-2xl shadow-black/30 backdrop-blur-2xl sm:flex-row sm:items-center sm:justify-between sm:px-5">
@@ -683,6 +814,28 @@ function TopBar({
         </button>
         <button type="button" onClick={onSync} className="nav-button">
           Sync
+        </button>
+        <button
+          type="button"
+          onClick={onOpenDrivePanel}
+          className={cn(
+            "nav-button relative flex items-center gap-2",
+            driveStatus === "connected" || driveStatus === "synced" ? "text-emerald-200/90" : "",
+          )}
+        >
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              driveStatus === "synced" || driveStatus === "connected"
+                ? "bg-emerald-400"
+                : driveStatus === "syncing" || driveStatus === "connecting"
+                  ? "bg-amber-300 animate-pulse"
+                  : driveStatus === "error"
+                    ? "bg-rose-400"
+                    : "bg-white/30",
+            )}
+          />
+          Backup
         </button>
         <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
           Lock
@@ -2644,6 +2797,210 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
     path: config.path.trim().replace(/^\/+/, "") || DEFAULT_CONFIG.path,
     token: config.token.trim(),
   };
+}
+
+/* ==========================================================================
+   GOOGLE DRIVE BACKUP HELPERS
+   ========================================================================== */
+function stripHtmlToText(html: string): string {
+  const withBreaks = html
+    .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n");
+  const withoutTags = withBreaks.replace(/<[^>]+>/g, "");
+  const decoded = withoutTags
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+  return decoded
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildDriveBackupText(vault: VaultData): string {
+  const lines: string[] = [];
+  lines.push("MOONLIT DIARY — FULL BACKUP");
+  lines.push(`Exported ${new Date().toLocaleString()}`);
+  lines.push(`${vault.entries.length} ${vault.entries.length === 1 ? "entry" : "entries"}`);
+  lines.push("=".repeat(60));
+  const sorted = [...vault.entries].sort((a, b) => a.date.localeCompare(b.date));
+  for (const entry of sorted) {
+    lines.push("");
+    lines.push(`Date: ${entry.date}`);
+    lines.push(`Title: ${entry.title || "(untitled)"}`);
+    lines.push(`Mood: ${entry.mood}`);
+    if (entry.dailyWin) lines.push(`Daily win: ${entry.dailyWin}`);
+    if (entry.attachments?.length) {
+      lines.push(`Attachments: ${entry.attachments.length} photo(s) — not included in this text backup, view in app`);
+    }
+    lines.push("-".repeat(40));
+    lines.push(stripHtmlToText(entry.bodyHtml) || "(no written content)");
+    lines.push("=".repeat(60));
+  }
+  return lines.join("\n");
+}
+
+async function findExistingDriveFileId(token: string): Promise<string | null> {
+  const cached = localStorage.getItem(DRIVE_FILE_ID_STORAGE_KEY);
+  if (cached) return cached;
+  const query = encodeURIComponent(`name='${DRIVE_BACKUP_FILE_NAME}' and trashed=false`);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&spaces=drive&fields=files(id,name)`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Drive search failed: ${res.status}`);
+  const data = (await res.json()) as { files?: { id: string }[] };
+  const fileId = data.files?.[0]?.id ?? null;
+  if (fileId) localStorage.setItem(DRIVE_FILE_ID_STORAGE_KEY, fileId);
+  return fileId;
+}
+
+async function createDriveBackupFile(token: string, text: string): Promise<string> {
+  const boundary = "moonlitdiaryboundary";
+  const metadata = { name: DRIVE_BACKUP_FILE_NAME, mimeType: "text/plain" };
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${text}\r\n` +
+    `--${boundary}--`;
+  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) throw new Error(`Drive create failed: ${res.status}`);
+  const data = (await res.json()) as { id: string };
+  localStorage.setItem(DRIVE_FILE_ID_STORAGE_KEY, data.id);
+  return data.id;
+}
+
+async function updateDriveBackupFile(token: string, fileId: string, text: string): Promise<void> {
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain; charset=UTF-8" },
+    body: text,
+  });
+  if (res.status === 404) {
+    localStorage.removeItem(DRIVE_FILE_ID_STORAGE_KEY);
+    throw new Error("DRIVE_FILE_MISSING");
+  }
+  if (!res.ok) throw new Error(`Drive update failed: ${res.status}`);
+}
+
+async function upsertDriveBackupFile(token: string, text: string): Promise<void> {
+  const existingId = await findExistingDriveFileId(token);
+  if (!existingId) {
+    await createDriveBackupFile(token, text);
+    return;
+  }
+  try {
+    await updateDriveBackupFile(token, existingId, text);
+  } catch (error) {
+    if ((error as Error).message === "DRIVE_FILE_MISSING") {
+      await createDriveBackupFile(token, text);
+      return;
+    }
+    throw error;
+  }
+}
+
+function DriveBackupPanel({
+  status,
+  error,
+  lastSynced,
+  configured,
+  onConnect,
+  onDisconnect,
+  onSyncNow,
+  onClose,
+}: {
+  status: DriveStatus;
+  error: string;
+  lastSynced: string | null;
+  configured: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onSyncNow: () => void;
+  onClose: () => void;
+}) {
+  const isConnected = status === "connected" || status === "synced" || status === "syncing";
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in" onClick={onClose}>
+      <div
+        className="relative w-[min(92vw,28rem)] rounded-[2rem] border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-float-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-cyan-200/60">Backup</p>
+            <h2 className="mt-1 text-2xl font-semibold text-white">Google Drive</h2>
+          </div>
+          <button type="button" onClick={onClose} className="round-button !px-3 !py-2" aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        {!configured ? (
+          <p className="mt-5 text-sm text-amber-200/80">
+            Google Drive isn't set up for this deployment yet. Add a{" "}
+            <code className="rounded bg-white/10 px-1 py-0.5">VITE_GOOGLE_CLIENT_ID</code> secret and redeploy.
+          </p>
+        ) : (
+          <>
+            <p className="mt-5 text-sm text-slate-300/80">
+              When connected, a plain-text copy of every entry (decrypted, readable) is written to a file named{" "}
+              <span className="text-slate-100">"{DRIVE_BACKUP_FILE_NAME}"</span> in your Google Drive, updated every time you save.
+            </p>
+            <div className="mt-5 flex items-center gap-2 text-sm">
+              <span
+                className={cn(
+                  "h-2 w-2 rounded-full",
+                  status === "synced" || status === "connected"
+                    ? "bg-emerald-400"
+                    : status === "syncing" || status === "connecting"
+                      ? "bg-amber-300 animate-pulse"
+                      : status === "error"
+                        ? "bg-rose-400"
+                        : "bg-white/30",
+                )}
+              />
+              <span className="text-slate-200">
+                {status === "disconnected" && "Not connected"}
+                {status === "connecting" && "Connecting…"}
+                {status === "connected" && "Connected — will back up on next save"}
+                {status === "syncing" && "Backing up…"}
+                {status === "synced" && "Backed up"}
+                {status === "error" && "Error"}
+              </span>
+            </div>
+            {lastSynced ? (
+              <p className="mt-1 text-xs text-slate-400">Last backed up {new Date(lastSynced).toLocaleString()}</p>
+            ) : null}
+            {error ? <p className="mt-2 text-sm text-rose-300/90">{error}</p> : null}
+            <div className="mt-6 flex gap-2">
+              {isConnected ? (
+                <>
+                  <button type="button" onClick={onSyncNow} className="nav-button-primary flex-1">
+                    Back up now
+                  </button>
+                  <button type="button" onClick={onDisconnect} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button type="button" onClick={onConnect} className="nav-button-primary flex-1">
+                  Connect Google Drive
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ==========================================================================

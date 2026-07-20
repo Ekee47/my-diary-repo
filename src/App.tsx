@@ -685,24 +685,24 @@ function UnlockScreen({
           <div className="space-y-5">
             <p className="text-sm uppercase tracking-[0.55em] text-fuchsia-200/50">Moonlit</p>
             <h1 className="max-w-3xl text-6xl font-semibold tracking-[-0.08em] text-white sm:text-7xl lg:text-8xl">
-              Your private night journal.
+              Ekansh's journal.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-300/80">
-              A dark, calendar-first diary with rich writing, media attachments, encrypted GitHub storage, and a full year mood map.
+              Friends might talk behind your back or betray you or may break your trust, but a diary never will
             </p>
           </div>
           <div className="grid max-w-2xl gap-3 text-sm text-slate-300/75 sm:grid-cols-3">
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Calendar front</p>
-              <p className="mt-2 text-slate-400">A dot appears on every saved day.</p>
+              <p className="text-cyan-100">Face card</p>
+              <p className="mt-2 text-slate-400">A good face card gets you in the room; standard character keeps you there.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Rich entries</p>
-              <p className="mt-2 text-slate-400">Headings, bold, italic, underline, lists, links.</p>
+              <p className="text-cyan-100">Victim Card</p>
+              <p className="mt-2 text-slate-400">Stop playing the victim card in a story you have the power to rewrite</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Mood pixels</p>
-              <p className="mt-2 text-slate-400">A full year colored by how you felt.</p>
+              <p className="text-cyan-100">Sympathy Card</p>
+              <p className="mt-2 text-slate-400">The blame card shifts the fault, but it never solves the problem.</p>
             </div>
           </div>
         </section>

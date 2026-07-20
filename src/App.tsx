@@ -2725,10 +2725,17 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
   if (data.content && data.encoding === "base64") {
     return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   }
-  if (data.download_url) {
-    const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
+  if (data.sha) {
+    // File is over the 1MB inline-content limit. Don't follow download_url to
+    // raw.githubusercontent.com — that domain doesn't support CORS with an
+    // Authorization header, so the browser's preflight fails. Instead, re-request
+    // the same api.github.com endpoint using the raw media type, which does
+    // support CORS with our auth header.
+    const rawResponse = await fetch(gitHubContentUrl(config), {
+      headers: { ...githubHeaders(config), Accept: "application/vnd.github.raw+json" },
+    });
     if (!rawResponse.ok) throw new Error(await githubErrorMessage(rawResponse));
-    return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
+    return { exists: true, sha: data.sha, text: await rawResponse.text() };
   }
   return { exists: true, sha: data.sha ?? null, text: "" };
 }

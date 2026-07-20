@@ -712,7 +712,7 @@ function UnlockScreen({
               <p className="text-sm uppercase tracking-[0.35em] text-cyan-200/50">Vault access</p>
               <h2 className="text-3xl font-semibold tracking-tight text-white">Open your GitHub diary file</h2>
               <p className="text-sm leading-6 text-slate-400">
-                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The passphrase is never stored by this app.
+                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The passphrase is (name)@(bday)(username no.)
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">

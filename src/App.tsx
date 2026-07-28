@@ -526,7 +526,10 @@ export default function App() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#03040a] text-slate-100">
+    <div
+      className="relative min-h-screen overflow-x-auto overflow-y-hidden no-scrollbar bg-[#03040a] text-slate-100"
+      style={{ WebkitOverflowScrolling: "touch" }}
+    >
       <AmbientBackdrop />
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <TopBar
@@ -674,7 +677,10 @@ function UnlockScreen({
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#02030a] text-slate-100">
+    <div
+      className="relative min-h-screen overflow-x-auto overflow-y-hidden no-scrollbar bg-[#02030a] text-slate-100"
+      style={{ WebkitOverflowScrolling: "touch" }}
+    >
       <AmbientBackdrop />
       <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-7xl items-center gap-10 px-5 py-10 lg:grid-cols-[0.95fr_1.05fr] lg:px-10">
         <section className="animate-screen-in space-y-8">
@@ -2228,7 +2234,7 @@ function AIIntelligenceView({
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
           <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong> button to prompt Llama 3 to traverse dates and language gaps natively. Dates in AI responses are clickable!
+            Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong> button to prompt Gemini to traverse dates and language gaps natively. Dates in AI responses are clickable!
           </p>
         </div>
         <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">

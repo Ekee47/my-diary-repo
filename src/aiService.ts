@@ -10,6 +10,10 @@ const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL_NAME = "llama-3.1-8b-instant";
 
+const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
 /* ==========================================================================
    GLOBAL AI REQUEST QUEUE
    - One request at a time
@@ -115,6 +119,67 @@ async function callGroq(
 }
 
 /* ==========================================================================
+   Low-level Gemini call with retries — used ONLY by the AI Cognitive Brain
+   (smartAISearch / Deep Analytics). Every other AI feature in this file
+   still runs on Groq.
+   ========================================================================== */
+async function callGemini(
+  systemPrompt: string,
+  userPrompt: string,
+  { temperature = 0.3, maxOutputTokens = 800, retries = 3 }: {
+    temperature?: number;
+    maxOutputTokens?: number;
+    retries?: number;
+  } = {},
+): Promise<any> {
+  let lastErr: any = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(GEMINI_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": GEMINI_API_KEY,
+        },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+          generationConfig: { temperature, maxOutputTokens },
+        }),
+      });
+
+      if (response.status === 429 || response.status >= 500) {
+        const backoff = 800 * Math.pow(2, attempt) + Math.random() * 400;
+        await sleep(backoff);
+        lastErr = new Error(`Gemini ${response.status}`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(
+          `AI Response Error (${response.status}): ${errData?.error?.message || "Failed."}`,
+        );
+      }
+      return await response.json();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await sleep(600 * Math.pow(2, attempt));
+        continue;
+      }
+    }
+  }
+  throw lastErr ?? new Error("AI request failed.");
+}
+
+function extractGeminiText(data: any): string {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return "";
+  return parts.map((p: any) => p?.text || "").join("").trim();
+}
+
+/* ==========================================================================
    Shared helpers
    ========================================================================== */
 function cleanHtmlToText(html: string): string {
@@ -212,8 +277,8 @@ function truncateForPrompt(text: string, maxChars = 700): string {
    1) SMART SEARCH — much more forgiving, name/keyword aware
    ========================================================================== */
 export async function smartAISearch(query: string, entries: DiaryEntry[]): Promise<string> {
-  if (!API_KEY) {
-    return "AI Error: VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.";
+  if (!GEMINI_API_KEY) {
+    return "AI Error: VITE_GEMINI_API_KEY is missing in your GitHub Actions Secrets configuration.";
   }
   if (!query.trim()) {
     return "Type a question above and I'll dig through your saved entries.";
@@ -291,24 +356,16 @@ ${formattedContext}
 
   try {
     const data = await aiQueue.enqueue(`search:${query}`, () =>
-      callGroq({
-        model: MODEL_NAME,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 600,
-      }),
+      callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 800 }),
     );
 
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || content.trim().length === 0) {
+    const content = extractGeminiText(data);
+    if (!content) {
       return "I couldn't extract a confident answer from your entries for that query. Try rephrasing with a different keyword or a date hint.";
     }
-    return content.trim();
+    return content;
   } catch (error: any) {
-    console.error("Groq AI Error:", error);
+    console.error("Gemini AI Error:", error);
     return `AI search failed: ${error?.message || "check your internet connection or API key."}`;
   }
 }

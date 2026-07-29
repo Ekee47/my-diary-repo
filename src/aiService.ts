@@ -12,7 +12,7 @@ const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL_NAME = "llama-3.1-8b-instant";
 
 const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /* ==========================================================================
@@ -163,11 +163,19 @@ async function callGemini(
       });
 
       if (response.status === 429) {
-        // Gemini's free-tier RPM window is a rolling ~60s, not sub-second — a short
-        // backoff won't clear it. Wait meaningfully longer before retrying.
+        const errData = await response.json().catch(() => ({}));
+        const detail: string = errData?.error?.message || "";
+        const isDaily = /per[\s_-]?day|PerDay|daily/i.test(detail);
+        lastErr = new Error(
+          isDaily
+            ? `Gemini's free daily quota is used up for today (resets at midnight Pacific Time). ${detail}`.trim()
+            : `Gemini is rate-limited (too many requests per minute). ${detail}`.trim(),
+        );
+        if (isDaily) break; // no backoff clears a daily quota — stop retrying immediately
+        // Per-minute limit — Gemini's rolling window is ~60s, not sub-second, so a
+        // short backoff won't clear it. Wait meaningfully longer before retrying.
         const backoff = 6000 * (attempt + 1) + Math.random() * 1000;
         await sleep(backoff);
-        lastErr = new Error("Gemini 429");
         continue;
       }
       if (response.status >= 500) {

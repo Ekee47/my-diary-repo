@@ -339,8 +339,10 @@ ${allowedDateList}
 
 ANSWER STYLE:
 - Warm, direct, specific.
-- If one entry matches, give one clear answer with its clickable date.
-- If multiple match, list up to 3 strongest with their dates and a short reason.
+- If exactly one entry matches, give one clear answer with its clickable date in a normal sentence.
+- If MULTIPLE entries mention the same person/place/topic, DO NOT merge them into one paragraph — answer in a bullet-point list, one bullet per entry, each starting with its clickable date, e.g.:
+  - [3rd july 2026]: short summary of what happened here
+  - [17th july 2026]: short summary of what happened here
 - If truly nothing matches, say: "I couldn't find anything about that in your saved entries. Try a different keyword or check your spelling."
 - NEVER return an empty answer. Always reply with at least one full sentence.
 

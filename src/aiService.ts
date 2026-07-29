@@ -16,11 +16,13 @@ const GEMINI_MODEL = "gemini-3.6-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /* ==========================================================================
-   GLOBAL AI REQUEST QUEUE
-   - One request at a time
-   - Minimum 1100ms between requests (avoids Groq rate limits)
+   GLOBAL AI REQUEST QUEUES
+   - One request at a time per queue
    - Auto-retry on 429 / 5xx with exponential backoff
    - Per-key in-flight dedup so identical requests don't fire twice
+   - Priority tasks (interactive search) jump ahead of background tasks
+     (indexing) so a user-triggered search never waits behind a queue of
+     silent background indexing jobs.
    ========================================================================== */
 type QueueTask<T> = {
   run: () => Promise<T>;
@@ -32,15 +34,20 @@ class AIRequestQueue {
   private queue: QueueTask<any>[] = [];
   private processing = false;
   private lastRequestAt = 0;
-  private readonly minGapMs = 1100;
-  private inFlight = new Map<string, Promise<any>>();
 
-  enqueue<T>(key: string | null, fn: () => Promise<T>): Promise<T> {
+  constructor(private readonly minGapMs: number) {}
+
+  enqueue<T>(key: string | null, fn: () => Promise<T>, options: { priority?: boolean } = {}): Promise<T> {
     if (key && this.inFlight.has(key)) {
       return this.inFlight.get(key)! as Promise<T>;
     }
     const promise = new Promise<T>((resolve, reject) => {
-      this.queue.push({ run: fn, resolve, reject });
+      const task = { run: fn, resolve, reject };
+      if (options.priority) {
+        this.queue.unshift(task);
+      } else {
+        this.queue.push(task);
+      }
       this.process();
     });
     if (key) {
@@ -49,6 +56,8 @@ class AIRequestQueue {
     }
     return promise;
   }
+
+  private inFlight = new Map<string, Promise<any>>();
 
   private async process() {
     if (this.processing) return;
@@ -71,7 +80,11 @@ class AIRequestQueue {
   }
 }
 
-const aiQueue = new AIRequestQueue();
+// Groq's free tier tolerates fast pacing.
+const aiQueue = new AIRequestQueue(1100);
+// Gemini's free tier is only ~10 requests/minute — pace well under that (~8/min)
+// so background indexing can never eat the quota a live search needs.
+const geminiQueue = new AIRequestQueue(7000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* ==========================================================================
@@ -127,7 +140,7 @@ async function callGroq(
 async function callGemini(
   systemPrompt: string,
   userPrompt: string,
-  { temperature = 0.3, maxOutputTokens = 800, retries = 3 }: {
+  { temperature = 0.3, maxOutputTokens = 800, retries = 4 }: {
     temperature?: number;
     maxOutputTokens?: number;
     retries?: number;
@@ -149,7 +162,15 @@ async function callGemini(
         }),
       });
 
-      if (response.status === 429 || response.status >= 500) {
+      if (response.status === 429) {
+        // Gemini's free-tier RPM window is a rolling ~60s, not sub-second — a short
+        // backoff won't clear it. Wait meaningfully longer before retrying.
+        const backoff = 6000 * (attempt + 1) + Math.random() * 1000;
+        await sleep(backoff);
+        lastErr = new Error("Gemini 429");
+        continue;
+      }
+      if (response.status >= 500) {
         const backoff = 800 * Math.pow(2, attempt) + Math.random() * 400;
         await sleep(backoff);
         lastErr = new Error(`Gemini ${response.status}`);
@@ -203,7 +224,7 @@ export async function generateSearchIndex(entry: { title: string; bodyHtml: stri
   if (!text.trim()) return "";
   try {
     const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
-    const data = await aiQueue.enqueue(null, () =>
+    const data = await geminiQueue.enqueue(null, () =>
       callGemini(INDEX_SYSTEM_PROMPT, userPrompt, { temperature: 0.1, maxOutputTokens: 500 }),
     );
     return extractGeminiText(data);
@@ -407,8 +428,10 @@ ${formattedContext}
 `.trim();
 
   try {
-    const data = await aiQueue.enqueue(`search:${query}`, () =>
-      callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 4096 }),
+    const data = await geminiQueue.enqueue(
+      `search:${query}`,
+      () => callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 4096 }),
+      { priority: true },
     );
 
     const content = extractGeminiText(data);

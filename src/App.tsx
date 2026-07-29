@@ -309,7 +309,7 @@ export default function App() {
     }
     if (!driveTokenClientRef.current) {
       setDriveStatus("error");
-      setDriveError("Google sign-in is still loading — try again in a moment.");
+      setDriveError("Google sign-in is still loading â€” try again in a moment.");
       return;
     }
     setDriveStatus("connecting");
@@ -341,7 +341,7 @@ export default function App() {
       if (message.includes("401")) {
         driveTokenRef.current = null;
         setDriveStatus("disconnected");
-        setDriveError("Your Google Drive session expired — reconnect to keep backing up.");
+        setDriveError("Your Google Drive session expired â€” reconnect to keep backing up.");
       } else {
         setDriveStatus("error");
         setDriveError(message);
@@ -526,10 +526,7 @@ export default function App() {
   }
 
   return (
-    <div
-      className="relative min-h-screen overflow-x-auto overflow-y-hidden no-scrollbar bg-[#03040a] text-slate-100"
-      style={{ WebkitOverflowScrolling: "touch" }}
-    >
+    <div className="relative min-h-screen overflow-hidden bg-[#03040a] text-slate-100">
       <AmbientBackdrop />
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <TopBar
@@ -677,10 +674,7 @@ function UnlockScreen({
   }
 
   return (
-    <div
-      className="relative min-h-screen overflow-x-auto overflow-y-hidden no-scrollbar bg-[#02030a] text-slate-100"
-      style={{ WebkitOverflowScrolling: "touch" }}
-    >
+    <div className="relative min-h-screen overflow-hidden bg-[#02030a] text-slate-100">
       <AmbientBackdrop />
       <main className="relative z-10 mx-auto grid min-h-screen w-full max-w-7xl items-center gap-10 px-5 py-10 lg:grid-cols-[0.95fr_1.05fr] lg:px-10">
         <section className="animate-screen-in space-y-8">
@@ -875,7 +869,7 @@ function SyncBadge({ state }: { state: SyncState }) {
 }
 
 /* ==========================================================================
-   HOME VIEW — Calendar + Selected day panel + View Entry button
+   HOME VIEW â€” Calendar + Selected day panel + View Entry button
    ========================================================================== */
 function HomeView({
   entryByDate,
@@ -1013,7 +1007,7 @@ function HomeView({
             <div className="mt-5 space-y-4">
               <div className="rounded-3xl border border-amber-300/20 bg-amber-500/10 p-4">
                 <p className="text-sm text-amber-100/90 flex items-center gap-2">
-                  <span className="text-amber-300">●</span>
+                  <span className="text-amber-300">â—</span>
                   You have an unsaved draft for this day
                 </p>
               </div>
@@ -1140,7 +1134,7 @@ function MonthlyCalendar({
 }
 
 /* ==========================================================================
-   ENTRY EDITOR — manual #tags, real LLM-based emotion assessment
+   ENTRY EDITOR â€” manual #tags, real LLM-based emotion assessment
    ========================================================================== */
 function EntryEditor({
   dateKey,
@@ -1185,7 +1179,7 @@ function EntryEditor({
   const activeMood = MOOD_BY_ID[mood];
   const autoSaveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Known tags across ALL entries — powers the #tag dropdown
+  // Known tags across ALL entries â€” powers the #tag dropdown
   const knownTags = useMemo(() => {
     const set = new Set<string>();
     entryByDate.forEach((e) => {
@@ -1194,7 +1188,7 @@ function EntryEditor({
     return Array.from(set).sort();
   }, [entryByDate]);
 
-  // Tags extracted from the current entry's body — drives the chip display
+  // Tags extracted from the current entry's body â€” drives the chip display
   const currentTags = useMemo(() => extractManualTags(bodyHtml, title), [bodyHtml, title]);
 
   const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
@@ -1230,7 +1224,7 @@ function EntryEditor({
     };
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, hasUnsavedChanges, currentDraftState]);
 
-  // AI Emotion Assessment — debounced LLM call, result cached per-entry
+  // AI Emotion Assessment â€” debounced LLM call, result cached per-entry
   useEffect(() => {
     const plain = htmlToText(bodyHtml).trim();
     if (plain.length < 8) {
@@ -1385,7 +1379,7 @@ function EntryEditor({
                 isAssessing ? "text-cyan-300/60 animate-pulse" : "text-cyan-300/70",
               )}
             >
-              AI Assessment: {isAssessing ? "reading your vibe…" : aiAssessment || "—"}
+              AI Assessment: {isAssessing ? "reading your vibeâ€¦" : aiAssessment || "â€”"}
             </span>
           </div>
           <input
@@ -1460,7 +1454,7 @@ function EntryEditor({
 }
 
 /* ==========================================================================
-   VIEW ENTRY SCREEN — read-only, no edit / delete affordances
+   VIEW ENTRY SCREEN â€” read-only, no edit / delete affordances
    ========================================================================== */
 function ViewEntryScreen({
   dateKey,
@@ -1570,7 +1564,7 @@ function ViewEntryScreen({
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-            {entry.attachments.length} file{entry.attachments.length === 1 ? "" : "s"} · {formatBytes(totalBytes)}
+            {entry.attachments.length} file{entry.attachments.length === 1 ? "" : "s"} Â· {formatBytes(totalBytes)}
           </div>
           <div className="mt-4 grid gap-3">
             {entry.attachments.map((attachment, idx) => (
@@ -1780,13 +1774,13 @@ function RichTextEditor({
         return;
       }
     }
-    // Confirm a new tag when user hits space — commit `#query` if it doesn't match an existing tag exactly
+    // Confirm a new tag when user hits space â€” commit `#query` if it doesn't match an existing tag exactly
     if (event.key === " " || event.key === "Enter") {
       const { text } = getTextBeforeCaret();
       const match = text.match(/(^|\s)#([\w-]+)$/);
       if (match) {
         const tagName = match[2].toLowerCase();
-        // It's already inserted into the text — no special action needed beyond closing the picker.
+        // It's already inserted into the text â€” no special action needed beyond closing the picker.
         setTagPicker((p) => ({ ...p, open: false }));
       }
     }
@@ -1854,7 +1848,7 @@ function RichTextEditor({
               {s.isNew ? (
                 <span className="text-[10px] uppercase tracking-widest text-fuchsia-300/80">new</span>
               ) : (
-                <span className="text-[10px] text-slate-500">↵</span>
+                <span className="text-[10px] text-slate-500">â†µ</span>
               )}
             </button>
           ))}
@@ -2116,7 +2110,7 @@ function MonthPixelPanel({
 }
 
 /* ==========================================================================
-   AI INTELLIGENCE VIEW — manual tag filter, no Automatic Topic Cloud
+   AI INTELLIGENCE VIEW â€” manual tag filter, no Automatic Topic Cloud
    ========================================================================== */
 function AIIntelligenceView({
   entries,
@@ -2137,7 +2131,7 @@ function AIIntelligenceView({
   const SEARCH_DEBOUNCE_MS = 1000;
 
 
-  // Manual tag cloud — aggregated from #tags across all entries
+  // Manual tag cloud â€” aggregated from #tags across all entries
   const globalTagCloud = useMemo(() => {
     const map: Record<string, number> = {};
     entries.forEach((e) => {
@@ -2205,7 +2199,7 @@ function AIIntelligenceView({
     }
     lastSearchAtRef.current = now;
 
-    if (isSearchingAI) return;            // lock — prevents queue collision
+    if (isSearchingAI) return;            // lock â€” prevents queue collision
     setIsSearchingAI(true);
     setSearchError(null);
     setAiAnswer("Thinking through your timeline memory...");
@@ -2228,8 +2222,8 @@ function AIIntelligenceView({
 
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
-      <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
+      <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
@@ -2249,7 +2243,7 @@ function AIIntelligenceView({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
+            className="min-w-0 w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
           />
           {searchQuery ? (
             <button
@@ -2346,7 +2340,7 @@ function AIIntelligenceView({
           )}
         </div>
       </div>
-      <aside className="space-y-4 animate-float-in">
+      <aside className="min-w-0 space-y-4 animate-float-in">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
           <div className="flex items-center justify-between">
             <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood Graph (Pie)</p>
@@ -2461,7 +2455,7 @@ function MonthYearPicker({
             <h2 className="mt-1 text-2xl font-semibold text-white">Pick month & year</h2>
           </div>
           <button type="button" onClick={onCancel} className="round-button !px-3 !py-2" aria-label="Close picker">
-            ✕
+            âœ•
           </button>
         </div>
         <div className="mt-6 flex gap-4 justify-center">
@@ -2628,7 +2622,7 @@ function MoodPieChart({
           <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
           {moods.map((m) => {
             const value = distribution[m.id] || 0;
-            if (value === 0) return null;              // ✅ no entries → no dot
+            if (value === 0) return null;              // âœ… no entries â†’ no dot
             const fraction = value / normalized;
             const dash = 2 * Math.PI * radius;
             const seg = dash * fraction;
@@ -2642,7 +2636,7 @@ function MoodPieChart({
                 r={radius}
                 stroke={m.color}
                 strokeWidth={stroke}
-                strokeLinecap="butt"                   // ✅ no round cap = no ghost dot
+                strokeLinecap="butt"                   // âœ… no round cap = no ghost dot
                 fill="none"
                 strokeDasharray={`${seg} ${dash - seg}`}
                 strokeDashoffset={offset}
@@ -2830,7 +2824,7 @@ function stripHtmlToText(html: string): string {
 
 function buildDriveBackupText(vault: VaultData): string {
   const lines: string[] = [];
-  lines.push("MOONLIT DIARY — FULL BACKUP");
+  lines.push("MOONLIT DIARY â€” FULL BACKUP");
   lines.push(`Exported ${new Date().toLocaleString()}`);
   lines.push(`${vault.entries.length} ${vault.entries.length === 1 ? "entry" : "entries"}`);
   lines.push("=".repeat(60));
@@ -2842,7 +2836,7 @@ function buildDriveBackupText(vault: VaultData): string {
     lines.push(`Mood: ${entry.mood}`);
     if (entry.dailyWin) lines.push(`Daily win: ${entry.dailyWin}`);
     if (entry.attachments?.length) {
-      lines.push(`Attachments: ${entry.attachments.length} photo(s) — not included in this text backup, view in app`);
+      lines.push(`Attachments: ${entry.attachments.length} photo(s) â€” not included in this text backup, view in app`);
     }
     lines.push("-".repeat(40));
     lines.push(stripHtmlToText(entry.bodyHtml) || "(no written content)");
@@ -2945,7 +2939,7 @@ function DriveBackupPanel({
             <h2 className="mt-1 text-2xl font-semibold text-white">Google Drive</h2>
           </div>
           <button type="button" onClick={onClose} className="round-button !px-3 !py-2" aria-label="Close">
-            ✕
+            âœ•
           </button>
         </div>
 
@@ -2975,9 +2969,9 @@ function DriveBackupPanel({
               />
               <span className="text-slate-200">
                 {status === "disconnected" && "Not connected"}
-                {status === "connecting" && "Connecting…"}
-                {status === "connected" && "Connected — will back up on next save"}
-                {status === "syncing" && "Backing up…"}
+                {status === "connecting" && "Connectingâ€¦"}
+                {status === "connected" && "Connected â€” will back up on next save"}
+                {status === "syncing" && "Backing upâ€¦"}
                 {status === "synced" && "Backed up"}
                 {status === "error" && "Error"}
               </span>
@@ -3090,7 +3084,7 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
   }
   if (data.sha) {
     // File is over the 1MB inline-content limit. Don't follow download_url to
-    // raw.githubusercontent.com — that domain doesn't support CORS with an
+    // raw.githubusercontent.com â€” that domain doesn't support CORS with an
     // Authorization header, so the browser's preflight fails. Instead, re-request
     // the same api.github.com endpoint using the raw media type, which does
     // support CORS with our auth header.
@@ -3477,7 +3471,7 @@ function LightboxViewer({
           onClick={(e) => { e.stopPropagation(); onClose(); }}
           className="flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-2 text-white transition backdrop-blur-md"
         >
-          <span className="text-lg leading-none">←</span>
+          <span className="text-lg leading-none">â†</span>
           <span className="text-sm font-medium">Back</span>
         </button>
         <div className="flex items-center gap-2">
@@ -3489,7 +3483,7 @@ function LightboxViewer({
             onClick={(e) => { e.stopPropagation(); downloadCurrent(); }}
             className="flex items-center gap-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 px-4 py-2 text-cyan-100 transition backdrop-blur-md"
           >
-            <span className="text-sm">⬇</span>
+            <span className="text-sm">â¬‡</span>
             <span className="text-sm font-medium">Download</span>
           </button>
         </div>
@@ -3502,7 +3496,7 @@ function LightboxViewer({
             className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Previous"
           >
-            ‹
+            â€¹
           </button>
           <button
             type="button"
@@ -3510,7 +3504,7 @@ function LightboxViewer({
             className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Next"
           >
-            ›
+            â€º
           </button>
         </>
       ) : null}

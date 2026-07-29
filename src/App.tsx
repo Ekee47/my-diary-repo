@@ -14,9 +14,10 @@ import {
   smartAISearch,
   generateAICustomQuestion,
   assessEntryEmotion,
+  generateSearchIndex,
 } from "./aiService";
 
-type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy";
+type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy" | "meh";
 type Screen = "home" | "entry" | "view" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
 type DriveStatus = "disconnected" | "connecting" | "connected" | "syncing" | "synced" | "error";
@@ -66,6 +67,7 @@ type DiaryEntry = {
   createdAt: string;
   updatedAt: string;
   aiAssessment?: string;
+  aiSearchIndex?: string;
 };
 
 type VaultData = {
@@ -132,6 +134,7 @@ const MOODS: MoodOption[] = [
   { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
   { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
   { id: "crazy", label: "Crazyy", color: "#33e0a1", glow: "rgba(51, 224, 161, 0.45)", description: "Wild, hyper, unpredictable" },
+  { id: "meh", label: "Meh", color: "#9ca3af", glow: "rgba(156, 163, 175, 0.35)", description: "mild, just \"okay\"" },
 ];
 
 const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
@@ -391,6 +394,7 @@ export default function App() {
       setSyncState("ready");
       setIsUnlocked(true);
       setScreen("home");
+      backfillMissingIndexes(nextVault);
     } catch (error) {
       setSyncState("error");
       setSyncError(getErrorMessage(error));
@@ -411,6 +415,7 @@ export default function App() {
       setVault(nextVault);
       setRemoteSha(remote.sha);
       setSyncState("ready");
+      backfillMissingIndexes(nextVault);
     } catch (error) {
       setSyncState("error");
       setSyncError(getErrorMessage(error));
@@ -434,6 +439,66 @@ export default function App() {
       setSyncError(getErrorMessage(error));
       throw error;
     }
+  }
+
+  /** Indexes one entry in the background (fires after a save, doesn't block the UI).
+   *  Merges the result into whatever the vault looks like when the AI call finishes,
+   *  so it can't clobber other changes made in the meantime, and skips silently if
+   *  that entry was edited again or deleted before indexing completed. */
+  async function indexEntryInBackground(entry: DiaryEntry) {
+    try {
+      const index = await generateSearchIndex(entry);
+      if (!index) return;
+      setVault((prevVault) => {
+        const current = prevVault.entries.find((e) => e.id === entry.id);
+        if (!current || current.bodyHtml !== entry.bodyHtml || current.aiSearchIndex) {
+          return prevVault;
+        }
+        const nextVault: VaultData = {
+          ...prevVault,
+          updatedAt: new Date().toISOString(),
+          entries: prevVault.entries.map((e) => (e.id === entry.id ? { ...e, aiSearchIndex: index } : e)),
+        };
+        persistVault(nextVault, `Index diary entry for ${entry.date}`).catch((error) => {
+          console.error("Background indexing save failed:", error);
+        });
+        return nextVault;
+      });
+    } catch (error) {
+      console.error("Background indexing failed:", error);
+    }
+  }
+
+  /** One-time (per session) sweep that indexes any entries saved before this feature
+   *  existed, or where indexing previously failed. Runs quietly after unlock/reload;
+   *  batches all results into a single commit once it finishes. */
+  async function backfillMissingIndexes(startVault: VaultData) {
+    const missing = startVault.entries.filter((e) => !e.aiSearchIndex);
+    if (!missing.length) return;
+    const updates = new Map<string, string>();
+    for (const entry of missing) {
+      try {
+        const index = await generateSearchIndex(entry);
+        if (index) updates.set(entry.id, index);
+      } catch (error) {
+        console.error("Backfill indexing failed for entry:", entry.date, error);
+      }
+    }
+    if (updates.size === 0) return;
+    setVault((prevVault) => {
+      const nextVault: VaultData = {
+        ...prevVault,
+        updatedAt: new Date().toISOString(),
+        entries: prevVault.entries.map((e) => (updates.has(e.id) ? { ...e, aiSearchIndex: updates.get(e.id) } : e)),
+      };
+      persistVault(
+        nextVault,
+        `Backfill AI search indexes for ${updates.size} ${updates.size === 1 ? "entry" : "entries"}`,
+      ).catch((error) => {
+        console.error("Backfill save failed:", error);
+      });
+      return nextVault;
+    });
   }
 
   function openLightbox(attachments: Attachment[], startIndex: number) {
@@ -470,6 +535,7 @@ export default function App() {
       .catch((error) => {
         console.error("Background save failed:", error);
       });
+    indexEntryInBackground(entry);
   }
 
   async function deleteEntry(dateKey: string) {
@@ -2178,7 +2244,7 @@ function AIIntelligenceView({
   }, [entries, expandedTerms, activeTag]);
 
   const emotionalDistribution = useMemo(() => {
-    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazy: 0 };
+    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazy: 0, meh: 0 };
     entries.forEach((e) => {
       if (tallies[e.mood] !== undefined) tallies[e.mood]++;
     });

@@ -263,6 +263,7 @@ export default function App() {
   const [showDrivePanel, setShowDrivePanel] = useState(false);
   const driveTokenRef = useRef<string | null>(null);
   const driveTokenClientRef = useRef<GoogleTokenClient | null>(null);
+  const [activeIndexingCount, setActiveIndexingCount] = useState(0);
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -446,6 +447,7 @@ export default function App() {
    *  so it can't clobber other changes made in the meantime, and skips silently if
    *  that entry was edited again or deleted before indexing completed. */
   async function indexEntryInBackground(entry: DiaryEntry) {
+    setActiveIndexingCount((c) => c + 1);
     try {
       const index = await generateSearchIndex(entry);
       if (!index) return;
@@ -466,34 +468,42 @@ export default function App() {
       });
     } catch (error) {
       console.error("Background indexing failed:", error);
+    } finally {
+      setActiveIndexingCount((c) => c - 1);
     }
   }
 
   /** One-time (per session) sweep that indexes any entries saved before this feature
-   *  existed, or where indexing previously failed. Runs quietly after unlock/reload;
-   *  batches all results into a single commit once it finishes. */
+   *  existed, or where indexing previously failed. Runs quietly after unlock/reload.
+   *  Updates local state after EACH entry (so the status pill can show live progress),
+   *  but only commits to GitHub once, after the whole sweep finishes. */
   async function backfillMissingIndexes(startVault: VaultData) {
     const missing = startVault.entries.filter((e) => !e.aiSearchIndex);
     if (!missing.length) return;
-    const updates = new Map<string, string>();
+    const updatedIds: string[] = [];
     for (const entry of missing) {
+      setActiveIndexingCount((c) => c + 1);
       try {
         const index = await generateSearchIndex(entry);
-        if (index) updates.set(entry.id, index);
+        if (index) {
+          updatedIds.push(entry.id);
+          setVault((prevVault) => ({
+            ...prevVault,
+            entries: prevVault.entries.map((e) => (e.id === entry.id ? { ...e, aiSearchIndex: index } : e)),
+          }));
+        }
       } catch (error) {
         console.error("Backfill indexing failed for entry:", entry.date, error);
+      } finally {
+        setActiveIndexingCount((c) => c - 1);
       }
     }
-    if (updates.size === 0) return;
+    if (updatedIds.length === 0) return;
     setVault((prevVault) => {
-      const nextVault: VaultData = {
-        ...prevVault,
-        updatedAt: new Date().toISOString(),
-        entries: prevVault.entries.map((e) => (updates.has(e.id) ? { ...e, aiSearchIndex: updates.get(e.id) } : e)),
-      };
+      const nextVault: VaultData = { ...prevVault, updatedAt: new Date().toISOString() };
       persistVault(
         nextVault,
-        `Backfill AI search indexes for ${updates.size} ${updates.size === 1 ? "entry" : "entries"}`,
+        `Backfill AI search indexes for ${updatedIds.length} ${updatedIds.length === 1 ? "entry" : "entries"}`,
       ).catch((error) => {
         console.error("Backfill save failed:", error);
       });
@@ -670,6 +680,8 @@ export default function App() {
               entries={vault.entries}
               entryByDate={entryByDate}
               onJumpToEntry={(dateKey) => openEntry(dateKey)}
+              indexingActive={activeIndexingCount > 0}
+              onRetryIndexing={() => backfillMissingIndexes(vault)}
             />
           ) : null}
         </main>
@@ -2178,14 +2190,64 @@ function MonthPixelPanel({
 /* ==========================================================================
    AI INTELLIGENCE VIEW â€” manual tag filter, no Automatic Topic Cloud
    ========================================================================== */
+function IndexingStatusPill({
+  active,
+  indexedCount,
+  total,
+  allIndexed,
+  onRetry,
+}: {
+  active: boolean;
+  indexedCount: number;
+  total: number;
+  allIndexed: boolean;
+  onRetry: () => void;
+}) {
+  if (total === 0) return null;
+
+  if (active) {
+    return (
+      <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200">
+        <span className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300" />
+        Indexing {indexedCount} of {total}â€¦
+      </span>
+    );
+  }
+
+  if (allIndexed) {
+    return (
+      <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200">
+        <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-emerald-400 text-[8px] font-bold text-emerald-950">âœ“</span>
+        All entries indexed
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onRetry}
+      className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/20"
+      title="Some entries couldn't be indexed â€” click to retry"
+    >
+      <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-amber-400 text-[8px] font-bold text-amber-950">âœ•</span>
+      {indexedCount}/{total} indexed â€” retry
+    </button>
+  );
+}
+
 function AIIntelligenceView({
   entries,
   entryByDate,
   onJumpToEntry,
+  indexingActive,
+  onRetryIndexing,
 }: {
   entries: DiaryEntry[];
   entryByDate: Map<string, DiaryEntry>;
   onJumpToEntry: (dateKey: string) => void;
+  indexingActive: boolean;
+  onRetryIndexing: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
@@ -2195,6 +2257,19 @@ function AIIntelligenceView({
 
   const lastSearchAtRef = useRef(0);
   const SEARCH_DEBOUNCE_MS = 1000;
+
+  // Entries with actual written content are the ones that need (and get) a search index.
+  // Empty-body entries are excluded so they can never keep the progress stuck below 100%.
+  const indexableEntries = useMemo(
+    () => entries.filter((e) => e.bodyHtml.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim().length > 0),
+    [entries],
+  );
+  const indexedCount = useMemo(
+    () => indexableEntries.filter((e) => e.aiSearchIndex && e.aiSearchIndex.trim()).length,
+    [indexableEntries],
+  );
+  const totalIndexable = indexableEntries.length;
+  const allIndexed = totalIndexable > 0 && indexedCount >= totalIndexable;
 
 
   // Manual tag cloud â€” aggregated from #tags across all entries
@@ -2292,7 +2367,16 @@ function AIIntelligenceView({
       <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
-          <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
+            <IndexingStatusPill
+              active={indexingActive}
+              indexedCount={indexedCount}
+              total={totalIndexable}
+              allIndexed={allIndexed}
+              onRetry={onRetryIndexing}
+            />
+          </div>
           <p className="text-sm text-slate-400 max-w-2xl">
             Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong> button to prompt Gemini to traverse dates and language gaps natively. Dates in AI responses are clickable!
           </p>

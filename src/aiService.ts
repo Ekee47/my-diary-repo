@@ -4,6 +4,7 @@ export interface DiaryEntry {
   date: string;
   title: string;
   bodyHtml: string;
+  aiSearchIndex?: string;
 }
 
 const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
@@ -180,6 +181,39 @@ function extractGeminiText(data: any): string {
 }
 
 /* ==========================================================================
+   SEARCH INDEXING — runs once per entry (on save, or as a one-time backfill),
+   not on every search. Compresses an entry into a small, dense, factual index
+   that Deep Analytics reads instead of raw text, so future searches are
+   faster/cheaper while still covering every entry and every fact in it.
+   ========================================================================== */
+const INDEX_SYSTEM_PROMPT = `
+You compress ONE diary entry into a dense factual index for another AI to search later.
+Rules:
+- Include EVERY named person, place, event, and notable emotional beat mentioned — never omit any of them to save space.
+- Preserve exact names and specific details. Never generalize ("a friend") if a name was given.
+- Do not add opinions, speculation, or anything not explicitly in the entry.
+- Write compact fragments (semicolon or newline separated), not full prose paragraphs.
+- Prioritize completeness over brevity — if you must choose, keep every fact even if the result runs long.
+Output ONLY the index text. No preamble, no labels, nothing else.
+`.trim();
+
+export async function generateSearchIndex(entry: { title: string; bodyHtml: string }): Promise<string> {
+  if (!GEMINI_API_KEY) return "";
+  const text = cleanHtmlToText(entry.bodyHtml);
+  if (!text.trim()) return "";
+  try {
+    const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
+    const data = await aiQueue.enqueue(null, () =>
+      callGemini(INDEX_SYSTEM_PROMPT, userPrompt, { temperature: 0.1, maxOutputTokens: 500 }),
+    );
+    return extractGeminiText(data);
+  } catch (error) {
+    console.error("Search index generation failed:", error);
+    return "";
+  }
+}
+
+/* ==========================================================================
    Shared helpers
    ========================================================================== */
 function cleanHtmlToText(html: string): string {
@@ -251,9 +285,15 @@ function expandQueryTerms(query: string): string[] {
   return Array.from(expanded);
 }
 
-/** Pick only the entries relevant to the query (falls back to most recent if nothing matches),
- *  so we never ship the whole vault's text to the model in one request. */
-function pickRelevantEntries(query: string, sortedEntries: DiaryEntry[], limit = 12): DiaryEntry[] {
+/** Gemini has a huge context window, so for Deep Analytics we no longer trim entries down
+ *  to a "top matches" shortlist — that was causing real instances to get silently dropped.
+ *  We send the WHOLE vault unless it's large enough that doing so would be wasteful/slow,
+ *  in which case we widen the keyword net and raise the cap substantially instead of
+ *  quietly picking just a handful of "best" matches. */
+function pickRelevantEntries(query: string, sortedEntries: DiaryEntry[], hardCap = 150): DiaryEntry[] {
+  if (sortedEntries.length <= hardCap) {
+    return sortedEntries;
+  }
   const terms = expandQueryTerms(query);
   const scored = sortedEntries.map((entry) => {
     const haystack = `${entry.title} ${cleanHtmlToText(entry.bodyHtml)}`.toLowerCase();
@@ -262,13 +302,13 @@ function pickRelevantEntries(query: string, sortedEntries: DiaryEntry[], limit =
   });
   const matched = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score);
   if (matched.length > 0) {
-    return matched.slice(0, limit).map((s) => s.entry);
+    return matched.slice(0, hardCap).map((s) => s.entry);
   }
-  // No keyword hit — fall back to the most recent entries so broad/vague queries still work.
-  return sortedEntries.slice(-limit);
+  // No keyword hit at all — fall back to the most recent entries so broad/vague queries still work.
+  return sortedEntries.slice(-hardCap);
 }
 
-function truncateForPrompt(text: string, maxChars = 700): string {
+function truncateForPrompt(text: string, maxChars = 2500): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}…`;
 }
@@ -288,32 +328,40 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   }
 
   const sortedEntries = entries.slice().sort((a, b) => a.date.localeCompare(b.date));
-  const relevantEntries = pickRelevantEntries(query, sortedEntries, 12);
+  const relevantEntries = pickRelevantEntries(query, sortedEntries, 150);
   const allowedDateList = relevantEntries
     .map((e) => `${e.date} => [${isoToReadableDate(e.date)}]`)
     .join("\n");
 
   const formattedContext = relevantEntries
-    .map(
-      (e) => `
+    .map((e) => {
+      const body =
+        e.aiSearchIndex && e.aiSearchIndex.trim()
+          ? `PRE-ANALYZED INDEX (dense, complete — covers every fact/person/event in this entry):\n${e.aiSearchIndex.trim()}`
+          : `ENTRY_TEXT:\n${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}`;
+      return `
 ENTRY_DATE_ISO: ${e.date}
 CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
 TITLE: ${e.title}
-ENTRY_TEXT:
-${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}
-`,
-    )
+${body}
+`;
+    })
     .join("\n\n--- ENTRY BREAK ---\n\n");
 
   const prompt = `
-This is a filtered subset of the user's saved entries, chosen because they best match the query below
-(or, if nothing matched keywords, the most recent entries as a fallback). There may be other entries
-not shown here — if nothing in this subset answers the query, say so rather than guessing.
+Below are the user's saved diary entries relevant to their query — in most cases this is their ENTIRE vault,
+not a shortlist, so treat every entry below as something you must actually check.
 
 User Query:
 "${query}"
 
 You are searching the user's saved diary entries below.
+
+EXHAUSTIVENESS — THIS IS THE MOST IMPORTANT RULE:
+- Scan EVERY SINGLE entry provided below from top to bottom before answering. Do not stop as soon as you find one match.
+- If the same person, event, or topic appears in 2, 3, 5, or more separate entries, you MUST report EVERY one of those instances — never just the first or the most obvious one.
+- Missing an instance that is clearly present in the text below is a failure. Re-check your draft answer against the entries before finalizing: did you actually mention every entry that's relevant, or only some?
+- It is completely fine for the answer to be long if that's what it takes to cover every instance. Do not compress multiple distinct instances into a vague summary — list them individually.
 
 SEARCH RULES (be GENEROUS, not strict):
 - Search across TITLE, ENTRY_TEXT, and dates.
@@ -328,9 +376,10 @@ SEARCH RULES (be GENEROUS, not strict):
   * udaas / sad / depressed / down / low
   * khush / happy / glad / excited
   * gym / workout / exercise / fitness
+- Also apply this same generosity to the CONCEPT in the query, not just literal keywords — e.g. "who didn't wish me on my birthday" should match entries mentioning being forgotten, ignored, uncelebrated, ghosted, or any phrasing describing someone failing to acknowledge the user's birthday, even if the word "wish" never appears.
 - If user mentions a person's name, find ANY entry that contains that name (full or partial).
 - If user asks "when did I…", give the matching date(s).
-- If the query is vague (e.g. "Alex"), summarize what you found about that subject.
+- If the query is vague (e.g. "Alex"), summarize what you found about that subject across every entry it appears in.
 
 DATE OUTPUT:
 - Only use dates from this allowed list:
@@ -340,9 +389,10 @@ ${allowedDateList}
 ANSWER STYLE:
 - Warm, direct, specific.
 - If exactly one entry matches, give one clear answer with its clickable date in a normal sentence.
-- If MULTIPLE entries mention the same person/place/topic, DO NOT merge them into one paragraph — answer in a bullet-point list, one bullet per entry, each starting with its clickable date, e.g.:
+- If MULTIPLE entries mention the same person/place/topic, DO NOT merge them into one paragraph and DO NOT cap the list at 2-3 — answer in a bullet-point list with ONE bullet per matching entry, covering ALL of them, each starting with its clickable date, e.g.:
   - [3rd july 2026]: short summary of what happened here
   - [17th july 2026]: short summary of what happened here
+  - [22nd july 2026]: short summary of what happened here
 - If truly nothing matches, say: "I couldn't find anything about that in your saved entries. Try a different keyword or check your spelling."
 - NEVER return an empty answer. Always reply with at least one full sentence.
 
@@ -358,7 +408,7 @@ ${formattedContext}
 
   try {
     const data = await aiQueue.enqueue(`search:${query}`, () =>
-      callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 800 }),
+      callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 4096 }),
     );
 
     const content = extractGeminiText(data);

@@ -264,6 +264,10 @@ export default function App() {
   const driveTokenRef = useRef<string | null>(null);
   const driveTokenClientRef = useRef<GoogleTokenClient | null>(null);
   const [activeIndexingCount, setActiveIndexingCount] = useState(0);
+  const [indexingProgress, setIndexingProgress] = useState<{ attempted: number; total: number }>({
+    attempted: 0,
+    total: 0,
+  });
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -480,7 +484,9 @@ export default function App() {
   async function backfillMissingIndexes(startVault: VaultData) {
     const missing = startVault.entries.filter((e) => !e.aiSearchIndex);
     if (!missing.length) return;
+    setIndexingProgress({ attempted: 0, total: missing.length });
     const updatedIds: string[] = [];
+    let attempted = 0;
     for (const entry of missing) {
       setActiveIndexingCount((c) => c + 1);
       try {
@@ -495,6 +501,8 @@ export default function App() {
       } catch (error) {
         console.error("Backfill indexing failed for entry:", entry.date, error);
       } finally {
+        attempted += 1;
+        setIndexingProgress({ attempted, total: missing.length });
         setActiveIndexingCount((c) => c - 1);
       }
     }
@@ -681,6 +689,7 @@ export default function App() {
               entryByDate={entryByDate}
               onJumpToEntry={(dateKey) => openEntry(dateKey)}
               indexingActive={activeIndexingCount > 0}
+              indexingProgress={indexingProgress}
               onRetryIndexing={() => backfillMissingIndexes(vault)}
             />
           ) : null}
@@ -2195,21 +2204,28 @@ function IndexingStatusPill({
   indexedCount,
   total,
   allIndexed,
+  progress,
   onRetry,
 }: {
   active: boolean;
   indexedCount: number;
   total: number;
   allIndexed: boolean;
+  progress: { attempted: number; total: number };
   onRetry: () => void;
 }) {
   if (total === 0) return null;
 
   if (active) {
+    // Prefer the attempted-count from the live sweep (moves even through failures) â€”
+    // fall back to indexedCount only if a progress batch isn't in flight (e.g. a lone
+    // per-entry background index after a save, which has no batch total of its own).
+    const shownProgress = progress.total > 0 ? progress.attempted : indexedCount;
+    const shownTotal = progress.total > 0 ? progress.total : total;
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200">
         <span className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300" />
-        Indexing {indexedCount} of {total}â€¦
+        Checked {shownProgress} of {shownTotal}â€¦
       </span>
     );
   }
@@ -2228,7 +2244,7 @@ function IndexingStatusPill({
       type="button"
       onClick={onRetry}
       className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/20"
-      title="Some entries couldn't be indexed â€” click to retry"
+      title="Some entries couldn't be indexed (likely rate-limited) â€” click to retry"
     >
       <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-amber-400 text-[8px] font-bold text-amber-950">âœ•</span>
       {indexedCount}/{total} indexed â€” retry
@@ -2241,12 +2257,14 @@ function AIIntelligenceView({
   entryByDate,
   onJumpToEntry,
   indexingActive,
+  indexingProgress,
   onRetryIndexing,
 }: {
   entries: DiaryEntry[];
   entryByDate: Map<string, DiaryEntry>;
   onJumpToEntry: (dateKey: string) => void;
   indexingActive: boolean;
+  indexingProgress: { attempted: number; total: number };
   onRetryIndexing: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
@@ -2374,6 +2392,7 @@ function AIIntelligenceView({
               indexedCount={indexedCount}
               total={totalIndexable}
               allIndexed={allIndexed}
+              progress={indexingProgress}
               onRetry={onRetryIndexing}
             />
           </div>

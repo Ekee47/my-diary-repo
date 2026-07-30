@@ -1,38 +1,11 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  type TouchEvent as ReactTouchEvent,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { cn } from "./utils/cn";
-import { smartAISearch, generateAICustomQuestion, assessEntryEmotion, generateSearchIndex } from "./aiService";
+// Import the multi-device cloud intelligence layer
+import { smartAISearch, generateAICustomQuestion, generateAITopicTags, generateSearchIndex, type AISearchIndex } from "./aiService";
 
-type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy" | "meh";
-type Screen = "home" | "entry" | "view" | "year" | "ai";
+type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazyy";
+type Screen = "home" | "entry" | "year" | "ai";
 type SyncState = "locked" | "loading" | "ready" | "saving" | "saved" | "error";
-type DriveStatus = "disconnected" | "connecting" | "connected" | "syncing" | "synced" | "error";
-
-type GoogleTokenClient = {
-  requestAccessToken: (options?: { prompt?: string }) => void;
-};
-type GoogleGlobal = {
-  accounts: {
-    oauth2: {
-      initTokenClient: (config: {
-        client_id: string;
-        scope: string;
-        callback: (response: { access_token: string; error?: string }) => void;
-      }) => GoogleTokenClient;
-      revoke: (token: string, callback: () => void) => void;
-    };
-  };
-};
-type EntryMode = "edit" | "view";
 
 type MoodOption = {
   id: MoodId;
@@ -61,8 +34,9 @@ type DiaryEntry = {
   attachments: Attachment[];
   createdAt: string;
   updatedAt: string;
-  aiAssessment?: string;
-  aiSearchIndex?: string;
+  aiSearchIndex?: AISearchIndex | null;
+  aiSearchIndexStatus?: "pending" | "indexed" | "failed";
+  aiSearchIndexError?: string;
 };
 
 type VaultData = {
@@ -93,6 +67,16 @@ type EncryptedVaultFile = {
   payload: string;
 };
 
+type SearchIndexingState = {
+  isIndexing: boolean;
+  indexed: number;
+  pending: number;
+  failed: number;
+  total: number;
+  message: string;
+};
+
+// Draft storage for auto-save functionality
 type DraftEntry = {
   dateKey: string;
   title: string;
@@ -105,13 +89,7 @@ type DraftEntry = {
 
 const CONFIG_STORAGE_KEY = "moonlit-diary-github-config-v1";
 const DRAFT_STORAGE_KEY = "moonlit-diary-draft-v1";
-const ASSESSMENT_CACHE_KEY = "moonlit-diary-assessment-cache-v1";
 const PBKDF2_ITERATIONS = 210_000;
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
-const DRIVE_BACKUP_FILE_NAME = "Moonlit Diary Backup.txt";
-const DRIVE_FILE_ID_STORAGE_KEY = "moonlit-diary-drive-file-id";
-
 const DEFAULT_CONFIG: GitHubConfig = {
   owner: "",
   repo: "",
@@ -119,188 +97,148 @@ const DEFAULT_CONFIG: GitHubConfig = {
   path: "data/moonlit-diary-vault.json",
   token: "",
 };
-
-const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024; // 500MB limit
 
 const MOODS: MoodOption[] = [
-  {
-    id: "happy",
-    label: "Happy",
-    color: "#f8c74a",
-    glow: "rgba(248, 199, 74, 0.42)",
-    description: "Bright, grateful, energized",
-  },
-  {
-    id: "depressed",
-    label: "Depressed",
-    color: "#5da8ff",
-    glow: "rgba(93, 168, 255, 0.36)",
-    description: "Heavy, quiet, low battery",
-  },
-  {
-    id: "sleepy",
-    label: "Sleepy",
-    color: "#a78bfa",
-    glow: "rgba(167, 139, 250, 0.4)",
-    description: "Slow, soft, tired mind",
-  },
-  {
-    id: "angry",
-    label: "Angry",
-    color: "#ff5b6c",
-    glow: "rgba(255, 91, 108, 0.38)",
-    description: "Hot, restless, intense",
-  },
-  {
-    id: "romantic",
-    label: "Romantic",
-    color: "#ff7ac8",
-    glow: "rgba(255, 122, 200, 0.42)",
-    description: "Tender, dreamy, connected",
-  },
-  {
-    id: "crazy",
-    label: "Crazyy",
-    color: "#33e0a1",
-    glow: "rgba(51, 224, 161, 0.45)",
-    description: "Wild, hyper, unpredictable",
-  },
-  { id: "meh", label: "Meh", color: "#9ca3af", glow: "rgba(156, 163, 175, 0.35)", description: 'mild, just "okay"' },
+  { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
+  { id: "depressed", label: "Depressed", color: "#5da8ff", glow: "rgba(93, 168, 255, 0.36)", description: "Heavy, quiet, low battery" },
+  { id: "sleepy", label: "Sleepy", color: "#a78bfa", glow: "rgba(167, 139, 250, 0.4)", description: "Slow, soft, tired mind" },
+  { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
+  { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
+  { id: "crazyy", label: "Crazyy", color: "#34d399", glow: "rgba(52, 211, 153, 0.42)", description: "Chaotic, bold, unfiltered" },
 ];
 
-const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>(
-  (acc, mood) => {
-    acc[mood.id] = mood;
-    return acc;
-  },
-  {} as Record<MoodId, MoodOption>,
-);
+const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
+  acc[mood.id] = mood;
+  return acc;
+}, {} as Record<MoodId, MoodOption>);
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const SEMANTIC_DICTIONARY: Record<string, string[]> = {
-  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island"],
-  alex: ["friend", "buddy", "partner", "mate", "brother"],
-  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client"],
+  beach: ["ocean", "sea", "waves", "sand", "coast", "shore", "water", "vacation", "island", "samundar", "pani"],
+  relationship: ["friend", "buddy", "partner", "mate", "brother", "crush", "date", "love", "pyaar", "alex"],
+  work: ["project", "office", "meeting", "boss", "task", "deadline", "coding", "client", "job"],
+  study: ["college", "school", "exam", "assignment", "lecture", "notes", "clg", "padhai"],
   fitness: ["gym", "workout", "run", "training", "exercise", "health", "lift"],
-  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled"],
-  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure"],
+  happy: ["glad", "joy", "awesome", "great", "excited", "wonderful", "smiled", "mast"],
+  stressed: ["overwhelmed", "tired", "busy", "heavy", "anxious", "pressure", "tension", "worry"],
+  angry: ["mad", "furious", "irritated", "annoyed", "fight", "argument", "ladai"],
+  sleepy: ["tired", "exhausted", "nap", "rest", "late night", "insomnia"],
+  crazyy: ["crazy", "wild", "chaos", "random", "hyper", "unhinged"],
 };
 
 interface AIResponseRendererProps {
   text: string;
   onDateClick: (isoDateStr: string) => void;
-  allowedDates?: Set<string>;
 }
 
+/**
+ * Converts text like "1st july 2026" into standard "2026-07-01"
+ */
 function parseReadableDateToISO(readableDate: string): string | null {
   const clean = readableDate.toLowerCase().trim();
+  
+  // Match patterns like "1st july 2026", "2nd march 2025", "15th december 2024"
   const match = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
   if (!match) {
+    // Try matching with just space (without ordinal suffix)
     const simpleMatch = clean.match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/);
     if (!simpleMatch) return null;
-    return finalizeParse(simpleMatch[1], simpleMatch[2], simpleMatch[3]);
+    const day = simpleMatch[1].padStart(2, '0');
+    const monthName = simpleMatch[2];
+    const year = simpleMatch[3];
+    
+    const months: Record<string, string> = {
+      january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
+      april: '04', apr: '04', may: '05', june: '06', jun: '06',
+      july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
+      october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
+    };
+    
+    const month = months[monthName];
+    if (!month) return null;
+    const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
+    const dayNum = Math.min(parseInt(day), maxDays);
+    return `${year}-${month}-${String(dayNum).padStart(2, '0')}`;
   }
-  return finalizeParse(match[1], match[2], match[3]);
-}
-
-function finalizeParse(day: string, monthName: string, year: string): string | null {
+  
+  const day = match[1].padStart(2, '0');
+  const monthName = match[2];
+  const year = match[3];
+  
   const months: Record<string, string> = {
-    january: "01",
-    jan: "01",
-    february: "02",
-    feb: "02",
-    march: "03",
-    mar: "03",
-    april: "04",
-    apr: "04",
-    may: "05",
-    june: "06",
-    jun: "06",
-    july: "07",
-    jul: "07",
-    august: "08",
-    aug: "08",
-    september: "09",
-    sep: "09",
-    sept: "09",
-    october: "10",
-    oct: "10",
-    november: "11",
-    nov: "11",
-    december: "12",
-    dec: "12",
+    january: '01', jan: '01', february: '02', feb: '02', march: '03', mar: '03', 
+    april: '04', apr: '04', may: '05', june: '06', jun: '06',
+    july: '07', jul: '07', august: '08', aug: '08', september: '09', sep: '09', sept: '09', 
+    october: '10', oct: '10', november: '11', nov: '11', december: '12', dec: '12'
   };
+  
   const month = months[monthName];
   if (!month) return null;
   const maxDays = new Date(parseInt(year), parseInt(month), 0).getDate();
   const dayNum = Math.min(parseInt(day), maxDays);
-  return `${year}-${month}-${String(dayNum).padStart(2, "0")}`;
+  return `${year}-${month}-${String(dayNum).padStart(2, '0')}`;
 }
 
-export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIResponseRendererProps) {
+/**
+ * Renders AI response text, turning readable date strings into clickable system buttons
+ */
+export function AIResponseRenderer({ text, onDateClick }: AIResponseRendererProps) {
+  // Pattern to match dates in formats like "1st july 2026", "2nd March 2025", "15th december 2024"
   const dateRegex = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)\s+(\d{4})\b/gi;
+  
   const parts: ReactNode[] = [];
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  let match;
   let keyIndex = 0;
 
   while ((match = dateRegex.exec(text)) !== null) {
+    // Add text before the match
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex, match.index)}</span>);
     }
+    
     const rawReadableDate = match[0];
     const isoDate = parseReadableDateToISO(rawReadableDate);
-    if (isoDate && (!allowedDates || allowedDates.has(isoDate))) {
+    
+    if (isoDate) {
       parts.push(
         <button
           key={`date-${keyIndex++}`}
           onClick={() => onDateClick(isoDate)}
           className="inline-block font-bold text-cyan-400 hover:text-cyan-300 hover:underline mx-0.5 align-baseline transition-colors cursor-pointer"
           style={{
-            background: "none",
-            border: "none",
+            background: 'none',
+            border: 'none',
             padding: 0,
-            font: "inherit",
-            color: "#22d3ee",
-            fontWeight: "bold",
-            cursor: "pointer",
-            textDecoration: "underline",
+            font: 'inherit',
+            color: '#22d3ee',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            textDecoration: 'underline'
           }}
           title={`Click to open entry for ${isoDate}`}
         >
           {rawReadableDate}
-        </button>,
+        </button>
       );
     } else {
       parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
     }
+    
     lastIndex = match.index + match[0].length;
   }
+
+  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${keyIndex++}`}>{text.slice(lastIndex)}</span>);
   }
+
   return <>{parts.length > 0 ? parts : text}</>;
 }
 
-/* ==========================================================================
- MAIN APP
- ========================================================================== */
+
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);
@@ -314,24 +252,13 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [editingDate, setEditingDate] = useState(todayKey);
-  const [viewingDate, setViewingDate] = useState(todayKey);
   const [visibleMonth, setVisibleMonth] = useState(() => keyToDate(todayKey));
   const [yearView, setYearView] = useState(() => keyToDate(todayKey).getFullYear());
+  const [selectedAITag, setSelectedAITag] = useState<string | null>(null);
   const [lightboxAttachments, setLightboxAttachments] = useState<Attachment[] | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [showMonthYearPicker, setShowMonthYearPicker] = useState(false);
-  const [assessmentCache, setAssessmentCache] = useState<Record<string, string>>(() => loadAssessmentCache());
-  const [driveStatus, setDriveStatus] = useState<DriveStatus>("disconnected");
-  const [driveError, setDriveError] = useState("");
-  const [driveLastSynced, setDriveLastSynced] = useState<string | null>(null);
-  const [showDrivePanel, setShowDrivePanel] = useState(false);
-  const driveTokenRef = useRef<string | null>(null);
-  const driveTokenClientRef = useRef<GoogleTokenClient | null>(null);
-  const [activeIndexingCount, setActiveIndexingCount] = useState(0);
-  const [indexingProgress, setIndexingProgress] = useState<{ attempted: number; total: number }>({
-    attempted: 0,
-    total: 0,
-  });
+  const [indexRetryNonce, setIndexRetryNonce] = useState(0);
+  const [searchIndexingState, setSearchIndexingState] = useState<SearchIndexingState>(() => createSearchIndexingState([]));
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, DiaryEntry>();
@@ -340,104 +267,129 @@ export default function App() {
   }, [vault.entries]);
 
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID) return;
-    let cancelled = false;
-    function tryInit() {
-      const google = (window as unknown as { google?: GoogleGlobal }).google;
-      if (!google?.accounts?.oauth2) return false;
-      driveTokenClientRef.current = google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID as string,
-        scope: DRIVE_SCOPE,
-        callback: (response) => {
-          if (response.error) {
-            setDriveStatus("error");
-            setDriveError(response.error);
-            return;
-          }
-          driveTokenRef.current = response.access_token;
-          setDriveStatus("connected");
-          setDriveError("");
-        },
+    setSearchIndexingState((current) => ({
+      ...createSearchIndexingState(vault.entries),
+      isIndexing: current.isIndexing,
+      message: current.isIndexing ? current.message : createSearchIndexingState(vault.entries).message,
+    }));
+  }, [vault.entries]);
+
+  useEffect(() => {
+    if (!isUnlocked || !config || !passphrase || vault.entries.length === 0) return;
+    if (syncState === "loading" || syncState === "saving") return;
+
+    const includeFailedEntries = indexRetryNonce > 0;
+    const entriesToIndex = vault.entries.filter((entry) => {
+      if (!needsSearchIndex(entry)) return false;
+      return includeFailedEntries || entry.aiSearchIndexStatus !== "failed";
+    });
+
+    if (entriesToIndex.length === 0) {
+      setSearchIndexingState(createSearchIndexingState(vault.entries));
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function runIndexing() {
+      let nextEntries = vault.entries.map((entry) => ({ ...entry }));
+      let completed = 0;
+      let failed = nextEntries.filter((entry) => entry.aiSearchIndexStatus === "failed" && !entriesToIndex.some((candidate) => candidate.id === entry.id)).length;
+
+      setSearchIndexingState({
+        ...createSearchIndexingState(nextEntries),
+        isIndexing: true,
+        message: `Indexing diary memory 0/${entriesToIndex.length}`,
       });
-      return true;
-    }
-    if (!tryInit()) {
-      const interval = window.setInterval(() => {
-        if (cancelled) return;
-        if (tryInit()) window.clearInterval(interval);
-      }, 300);
-      return () => {
-        cancelled = true;
-        window.clearInterval(interval);
+
+      for (const entry of entriesToIndex) {
+        if (isCancelled) return;
+        const contentHash = createSearchIndexContentHash(entry);
+
+        try {
+          const aiSearchIndex = await generateSearchIndex(entry, contentHash);
+          nextEntries = nextEntries.map((item) =>
+            item.id === entry.id
+              ? {
+                  ...item,
+                  aiSearchIndex,
+                  aiSearchIndexStatus: "indexed" as const,
+                  aiSearchIndexError: undefined,
+                }
+              : item,
+          );
+        } catch (error) {
+          failed += 1;
+          nextEntries = nextEntries.map((item) =>
+            item.id === entry.id
+              ? {
+                  ...item,
+                  aiSearchIndex: null,
+                  aiSearchIndexStatus: "failed" as const,
+                  aiSearchIndexError: getErrorMessage(error),
+                }
+              : item,
+          );
+        }
+
+        completed += 1;
+        if (!isCancelled) {
+          setSearchIndexingState({
+            ...createSearchIndexingState(nextEntries),
+            isIndexing: completed < entriesToIndex.length,
+            failed,
+            message: `Indexing diary memory ${completed}/${entriesToIndex.length}`,
+          });
+        }
+      }
+
+      if (isCancelled) return;
+
+      const nextVault: VaultData = {
+        ...vault,
+        updatedAt: new Date().toISOString(),
+        entries: nextEntries,
       };
-    }
-  }, []);
 
-  function connectDrive() {
-    if (!GOOGLE_CLIENT_ID) {
-      setDriveStatus("error");
-      setDriveError("Google Client ID isn't configured for this deployment yet.");
-      return;
-    }
-    if (!driveTokenClientRef.current) {
-      setDriveStatus("error");
-      setDriveError("Google sign-in is still loading - try again in a moment.");
-      return;
-    }
-    setDriveStatus("connecting");
-    setDriveError("");
-    driveTokenClientRef.current.requestAccessToken({ prompt: driveTokenRef.current ? "" : "consent" });
-  }
+      setVault(nextVault);
+      setSearchIndexingState(createSearchIndexingState(nextEntries));
 
-  function disconnectDrive() {
-    const google = (window as unknown as { google?: GoogleGlobal }).google;
-    if (driveTokenRef.current && google?.accounts?.oauth2) {
-      google.accounts.oauth2.revoke(driveTokenRef.current, () => {});
-    }
-    driveTokenRef.current = null;
-    setDriveStatus("disconnected");
-    setDriveError("");
-  }
-
-  async function syncDriveBackup(nextVault: VaultData) {
-    if (!driveTokenRef.current) return;
-    setDriveStatus("syncing");
-    try {
-      const text = buildDriveBackupText(nextVault);
-      await upsertDriveBackupFile(driveTokenRef.current, text);
-      setDriveStatus("synced");
-      setDriveError("");
-      setDriveLastSynced(new Date().toISOString());
-    } catch (error) {
-      const message = getErrorMessage(error);
-      if (message.includes("401")) {
-        driveTokenRef.current = null;
-        setDriveStatus("disconnected");
-        setDriveError("Your Google Drive session expired - reconnect to keep backing up.");
-      } else {
-        setDriveStatus("error");
-        setDriveError(message);
+      try {
+        await persistVault(nextVault, "Update AI diary search indexes");
+      } catch (error) {
+        console.error("Background index save failed:", error);
       }
     }
-  }
+
+    runIndexing();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [config, indexRetryNonce, isUnlocked, passphrase, syncState, vault.entries]);
 
   async function unlockVault(nextConfig: GitHubConfig, nextPassphrase: string, rememberConfig: boolean) {
     const cleanedConfig = normalizeConfig(nextConfig);
     setSyncError("");
     setSyncState("loading");
+
     try {
       if (!cleanedConfig.owner || !cleanedConfig.repo || !cleanedConfig.branch || !cleanedConfig.path) {
         throw new Error("Add your GitHub owner, repo, branch, and vault file path.");
       }
+
       if (!cleanedConfig.token) {
         throw new Error("Add a GitHub token with Contents read and write access.");
       }
+
       if (!nextPassphrase.trim()) {
         throw new Error("Add the passphrase that unlocks your diary vault.");
       }
+
       const remote = await fetchGitHubVaultFile(cleanedConfig);
       let nextVault = createEmptyVault();
       let nextSha = remote.sha;
+
       if (remote.exists && remote.text.trim()) {
         const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
         nextVault = await openVaultFile(parsed, nextPassphrase);
@@ -451,11 +403,13 @@ export default function App() {
         );
         nextSha = created.sha;
       }
+
       if (rememberConfig) {
         localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(cleanedConfig));
       } else {
         localStorage.removeItem(CONFIG_STORAGE_KEY);
       }
+
       setConfig(cleanedConfig);
       setPassphrase(nextPassphrase);
       setVault(nextVault);
@@ -463,7 +417,6 @@ export default function App() {
       setSyncState("ready");
       setIsUnlocked(true);
       setScreen("home");
-      backfillMissingIndexes(nextVault);
     } catch (error) {
       setSyncState("error");
       setSyncError(getErrorMessage(error));
@@ -474,17 +427,18 @@ export default function App() {
     if (!config || !passphrase) return;
     setSyncError("");
     setSyncState("loading");
+
     try {
       const remote = await fetchGitHubVaultFile(config);
       if (!remote.exists || !remote.text.trim()) {
         throw new Error("The vault file was not found on GitHub.");
       }
+
       const parsed = JSON.parse(remote.text) as EncryptedVaultFile | VaultData;
       const nextVault = await openVaultFile(parsed, passphrase);
       setVault(nextVault);
       setRemoteSha(remote.sha);
       setSyncState("ready");
-      backfillMissingIndexes(nextVault);
     } catch (error) {
       setSyncState("error");
       setSyncError(getErrorMessage(error));
@@ -495,8 +449,10 @@ export default function App() {
     if (!config || !passphrase) {
       throw new Error("Unlock your GitHub vault before saving.");
     }
+
     setSyncError("");
     setSyncState("saving");
+
     try {
       const encrypted = await encryptVault(nextVault, passphrase);
       const saved = await putGitHubVaultFile(config, encrypted, remoteSha, commitMessage);
@@ -510,132 +466,71 @@ export default function App() {
     }
   }
 
-  /** Indexes one entry in the background (fires after a save, doesn't block the UI).
-   * Merges the result into whatever the vault looks like when the AI call finishes,
-   * so it can't clobber other changes made in the meantime, and skips silently if
-   * that entry was edited again or deleted before indexing completed. */
-  async function indexEntryInBackground(entry: DiaryEntry) {
-    setActiveIndexingCount((c) => c + 1);
-    try {
-      const index = await generateSearchIndex(entry);
-      if (!index) return;
-      setVault((prevVault) => {
-        const current = prevVault.entries.find((e) => e.id === entry.id);
-        if (!current || current.bodyHtml !== entry.bodyHtml || current.aiSearchIndex) {
-          return prevVault;
-        }
-        const nextVault: VaultData = {
-          ...prevVault,
-          updatedAt: new Date().toISOString(),
-          entries: prevVault.entries.map((e) => (e.id === entry.id ? { ...e, aiSearchIndex: index } : e)),
-        };
-        persistVault(nextVault, `Index diary entry for ${entry.date}`).catch((error) => {
-          console.error("Background indexing save failed:", error);
-        });
-        return nextVault;
-      });
-    } catch (error) {
-      console.error("Background indexing failed:", error);
-    } finally {
-      setActiveIndexingCount((c) => c - 1);
-    }
-  }
-
-  /** One-time (per session) sweep that indexes any entries saved before this feature
-   * existed, or where indexing previously failed. Runs quietly after unlock/reload.
-   * Updates local state after EACH entry (so the status pill can show live progress),
-   * but only commits to GitHub once, after the whole sweep finishes. */
-  async function backfillMissingIndexes(startVault: VaultData) {
-    const missing = startVault.entries.filter((e) => !e.aiSearchIndex);
-    if (!missing.length) return;
-    setIndexingProgress({ attempted: 0, total: missing.length });
-    const updatedIds: string[] = [];
-    let attempted = 0;
-    for (const entry of missing) {
-      setActiveIndexingCount((c) => c + 1);
-      try {
-        const index = await generateSearchIndex(entry);
-        if (index) {
-          updatedIds.push(entry.id);
-          setVault((prevVault) => ({
-            ...prevVault,
-            entries: prevVault.entries.map((e) => (e.id === entry.id ? { ...e, aiSearchIndex: index } : e)),
-          }));
-        }
-      } catch (error) {
-        console.error("Backfill indexing failed for entry:", entry.date, error);
-      } finally {
-        attempted += 1;
-        setIndexingProgress({ attempted, total: missing.length });
-        setActiveIndexingCount((c) => c - 1);
-      }
-    }
-    if (updatedIds.length === 0) return;
-    setVault((prevVault) => {
-      const nextVault: VaultData = { ...prevVault, updatedAt: new Date().toISOString() };
-      persistVault(
-        nextVault,
-        `Backfill AI search indexes for ${updatedIds.length} ${updatedIds.length === 1 ? "entry" : "entries"}`,
-      ).catch((error) => {
-        console.error("Backfill save failed:", error);
-      });
-      return nextVault;
-    });
-  }
-
   function openLightbox(attachments: Attachment[], startIndex: number) {
     setLightboxAttachments(attachments);
     setLightboxIndex(startIndex);
   }
+
   function closeLightbox() {
     setLightboxAttachments(null);
     setLightboxIndex(0);
   }
+
   function goToPrevLightboxItem() {
     if (!lightboxAttachments) return;
     setLightboxIndex((prev) => (prev > 0 ? prev - 1 : lightboxAttachments.length - 1));
   }
+
   function goToNextLightboxItem() {
     if (!lightboxAttachments) return;
     setLightboxIndex((prev) => (prev < lightboxAttachments.length - 1 ? prev + 1 : 0));
   }
 
   async function saveEntry(entry: DiaryEntry) {
+    // Clear draft when entry is explicitly saved
     clearDraft(entry.date);
+    
     const entries = vault.entries.filter((item) => item.date !== entry.date);
     const nextVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
       entries: [...entries, entry].sort((a, b) => a.date.localeCompare(b.date)),
     };
+
+    // Optimistically update the local vault state immediately so UI reflects the save
     setVault(nextVault);
     setSelectedDate(entry.date);
     setVisibleMonth(keyToDate(entry.date));
     setScreen("home");
-    persistVault(nextVault, `Save diary entry for ${entry.date}`)
-      .then(() => syncDriveBackup(nextVault))
-      .catch((error) => {
-        console.error("Background save failed:", error);
-      });
-    indexEntryInBackground(entry);
+
+    // Perform the actual GitHub save in the background
+    // Don't await here - let it complete in background while user can navigate
+    persistVault(nextVault, `Save diary entry for ${entry.date}`).catch((error) => {
+      console.error("Background save failed:", error);
+      // Error is already displayed via syncError/syncState
+    });
   }
 
   async function deleteEntry(dateKey: string) {
+    // Clear draft when entry is deleted
     clearDraft(dateKey);
+    
     const nextVault: VaultData = {
       ...vault,
       updatedAt: new Date().toISOString(),
       entries: vault.entries.filter((entry) => entry.date !== dateKey),
     };
+
+    // Optimistically update and navigate
     setVault(nextVault);
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("home");
-    persistVault(nextVault, `Delete diary entry for ${dateKey}`)
-      .then(() => syncDriveBackup(nextVault))
-      .catch((error) => {
-        console.error("Background delete failed:", error);
-      });
+
+    // Delete in background
+    persistVault(nextVault, `Delete diary entry for ${dateKey}`).catch((error) => {
+      console.error("Background delete failed:", error);
+    });
   }
 
   function openEntry(dateKey: string) {
@@ -643,13 +538,6 @@ export default function App() {
     setSelectedDate(dateKey);
     setVisibleMonth(keyToDate(dateKey));
     setScreen("entry");
-  }
-
-  function openViewEntry(dateKey: string) {
-    setViewingDate(dateKey);
-    setSelectedDate(dateKey);
-    setVisibleMonth(keyToDate(dateKey));
-    setScreen("view");
   }
 
   function lockVault() {
@@ -685,14 +573,17 @@ export default function App() {
             setYearView(keyToDate(selectedDate).getFullYear());
             setScreen("year");
           }}
-          onAIScreen={() => setScreen("ai")}
+          onAIScreen={() => {
+            setSelectedAITag(null);
+            setScreen("ai");
+          }}
           onNewEntry={() => openEntry(todayKey)}
           onSync={reloadVault}
           onLock={lockVault}
-          driveStatus={driveStatus}
-          onOpenDrivePanel={() => setShowDrivePanel(true)}
         />
+
         {syncError ? <SyncError message={syncError} /> : null}
+
         <main className="flex-1 pb-8">
           {screen === "home" ? (
             <HomeView
@@ -702,10 +593,9 @@ export default function App() {
               onSelectDate={setSelectedDate}
               onVisibleMonthChange={setVisibleMonth}
               onOpenEntry={openEntry}
-              onOpenViewEntry={openViewEntry}
-              onShowMonthYearPicker={() => setShowMonthYearPicker(true)}
             />
           ) : null}
+
           {screen === "entry" ? (
             <EntryEditor
               key={editingDate}
@@ -713,31 +603,13 @@ export default function App() {
               entry={entryByDate.get(editingDate)}
               entryByDate={entryByDate}
               syncState={syncState}
-              assessmentCache={assessmentCache}
-              onUpdateAssessmentCache={(date, label) => {
-                setAssessmentCache((prev) => {
-                  const next = { ...prev, [date]: label };
-                  saveAssessmentCache(next);
-                  return next;
-                });
-              }}
               onBack={() => setScreen("home")}
               onSave={saveEntry}
               onDelete={deleteEntry}
               onOpenLightbox={openLightbox}
             />
           ) : null}
-          {screen === "view" ? (
-            <ViewEntryScreen
-              key={`view-${viewingDate}`}
-              dateKey={viewingDate}
-              entry={entryByDate.get(viewingDate)}
-              assessmentCache={assessmentCache}
-              onBack={() => setScreen("home")}
-              onSwitchToEdit={() => openEntry(viewingDate)}
-              onOpenLightbox={openLightbox}
-            />
-          ) : null}
+
           {screen === "year" ? (
             <YearPixelsView
               year={yearView}
@@ -747,19 +619,23 @@ export default function App() {
               onOpenEntry={openEntry}
             />
           ) : null}
+
           {screen === "ai" ? (
             <AIIntelligenceView
               entries={vault.entries}
-              entryByDate={entryByDate}
-              onJumpToEntry={(dateKey) => openEntry(dateKey)}
-              indexingActive={activeIndexingCount > 0}
-              indexingProgress={indexingProgress}
-              onRetryIndexing={() => backfillMissingIndexes(vault)}
+              initialTagFilter={selectedAITag}
+              indexingState={searchIndexingState}
+              onRetryIndexing={() => setIndexRetryNonce((value) => value + 1)}
+              onJumpToEntry={(dateKey) => {
+                openEntry(dateKey);
+              }}
             />
           ) : null}
         </main>
       </div>
-      {lightboxAttachments ? (
+
+      {/* Lightbox Viewer */}
+      {lightboxAttachments && (
         <LightboxViewer
           attachments={lightboxAttachments}
           currentIndex={lightboxIndex}
@@ -767,38 +643,46 @@ export default function App() {
           onPrev={goToPrevLightboxItem}
           onNext={goToNextLightboxItem}
         />
-      ) : null}
-      {showMonthYearPicker ? (
-        <MonthYearPicker
-          month={visibleMonth.getMonth()}
-          year={visibleMonth.getFullYear()}
-          onConfirm={(month, year) => {
-            const newDate = new Date(year, month, 1);
-            setVisibleMonth(newDate);
-            setShowMonthYearPicker(false);
-          }}
-          onCancel={() => setShowMonthYearPicker(false)}
-        />
-      ) : null}
-      {showDrivePanel ? (
-        <DriveBackupPanel
-          status={driveStatus}
-          error={driveError}
-          lastSynced={driveLastSynced}
-          configured={Boolean(GOOGLE_CLIENT_ID)}
-          onConnect={connectDrive}
-          onDisconnect={disconnectDrive}
-          onSyncNow={() => syncDriveBackup(vault)}
-          onClose={() => setShowDrivePanel(false)}
-        />
-      ) : null}
+      )}
     </div>
   );
 }
 
-/* ==========================================================================
- UNLOCK SCREEN
- ========================================================================== */
+// Draft management functions
+function saveDraft(draft: DraftEntry): void {
+  try {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  } catch (e) {
+    console.warn("Failed to save draft to localStorage:", e);
+  }
+}
+
+function loadDraft(dateKey: string): DraftEntry | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as DraftEntry;
+    // Only return draft if it matches the requested date
+    return draft.dateKey === dateKey ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearDraft(dateKey: string): void {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (raw) {
+      const draft = JSON.parse(raw) as DraftEntry;
+      if (draft.dateKey === dateKey) {
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+      }
+    }
+  } catch {
+    // Ignore errors when clearing draft
+  }
+}
+
 function UnlockScreen({
   initialConfig,
   syncState,
@@ -833,44 +717,43 @@ function UnlockScreen({
             <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.9)]" />
             Encrypted GitHub file diary
           </div>
+
           <div className="space-y-5">
             <p className="text-sm uppercase tracking-[0.55em] text-fuchsia-200/50">Moonlit</p>
             <h1 className="max-w-3xl text-6xl font-semibold tracking-[-0.08em] text-white sm:text-7xl lg:text-8xl">
-              Ekansh's journal.
+              Your private night journal.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-300/80">
-              Friends might talk behind your back or betray you or may break your trust, but a diary never will
+              A dark, calendar-first diary with rich writing, media attachments, encrypted GitHub storage, and a full year mood map.
             </p>
           </div>
+
           <div className="grid max-w-2xl gap-3 text-sm text-slate-300/75 sm:grid-cols-3">
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Face card</p>
-              <p className="mt-2 text-slate-400">
-                A good face card gets you in the room; standard character keeps you there.
-              </p>
+              <p className="text-cyan-100">Calendar front</p>
+              <p className="mt-2 text-slate-400">A dot appears on every saved day.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Victim Card</p>
-              <p className="mt-2 text-slate-400">
-                Stop playing the victim card in a story you have the power to rewrite
-              </p>
+              <p className="text-cyan-100">Rich entries</p>
+              <p className="mt-2 text-slate-400">Headings, bold, italic, underline, lists, links.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
-              <p className="text-cyan-100">Sympathy Card</p>
-              <p className="mt-2 text-slate-400">The blame card shifts the fault, but it never solves the problem.</p>
+              <p className="text-cyan-100">Mood pixels</p>
+              <p className="mt-2 text-slate-400">A full year colored by how you felt.</p>
             </div>
           </div>
         </section>
+
         <section className="animate-float-in rounded-[2rem] border border-white/10 bg-slate-950/70 p-5 shadow-2xl shadow-black/50 backdrop-blur-2xl sm:p-7">
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
               <p className="text-sm uppercase tracking-[0.35em] text-cyan-200/50">Vault access</p>
               <h2 className="text-3xl font-semibold tracking-tight text-white">Open your GitHub diary file</h2>
               <p className="text-sm leading-6 text-slate-400">
-                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The
-                passphrase is (name)@(bday)(username no.)
+                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The passphrase is never stored by this app.
               </p>
             </div>
+
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="GitHub owner">
                 <input
@@ -905,6 +788,7 @@ function UnlockScreen({
                 />
               </Field>
             </div>
+
             <Field label="GitHub token">
               <input
                 type="password"
@@ -914,6 +798,7 @@ function UnlockScreen({
                 className="field-input"
               />
             </Field>
+
             <Field label="Diary passphrase">
               <input
                 type="password"
@@ -923,6 +808,7 @@ function UnlockScreen({
                 className="field-input"
               />
             </Field>
+
             <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm text-slate-300">
               <input
                 type="checkbox"
@@ -932,7 +818,9 @@ function UnlockScreen({
               />
               Remember GitHub details on this device. Diary data still stays in the GitHub vault file.
             </label>
+
             {syncError ? <SyncError message={syncError} compact /> : null}
+
             <button
               type="submit"
               disabled={isLoading}
@@ -948,9 +836,6 @@ function UnlockScreen({
   );
 }
 
-/* ==========================================================================
- TOP BAR
- ========================================================================== */
 function TopBar({
   syncState,
   currentScreen,
@@ -960,8 +845,6 @@ function TopBar({
   onNewEntry,
   onSync,
   onLock,
-  driveStatus,
-  onOpenDrivePanel,
 }: {
   syncState: SyncState;
   currentScreen: Screen;
@@ -971,46 +854,30 @@ function TopBar({
   onNewEntry: () => void;
   onSync: () => void;
   onLock: () => void;
-  driveStatus: DriveStatus;
-  onOpenDrivePanel: () => void;
 }) {
   return (
     <header className="mb-5 flex flex-col gap-4 rounded-[1.8rem] border border-white/10 bg-white/[0.035] px-4 py-4 shadow-2xl shadow-black/30 backdrop-blur-2xl sm:flex-row sm:items-center sm:justify-between sm:px-5">
       <button type="button" onClick={onHome} className="group flex items-center gap-4 text-left">
         <span className="relative grid h-12 w-12 place-items-center overflow-hidden rounded-2xl border border-cyan-200/20 bg-cyan-200/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]">
           <span className="absolute h-9 w-9 rounded-full bg-cyan-300/20 blur-xl transition group-hover:bg-fuchsia-300/25" />
-          <span className="relative h-5 w-5 rounded-full border border-cyan-100/70 bg-slate-950 shadow-[inset_6px_0_0_rgba(255,255,255,0.75)]" />
+          <span className="relative h-5 w-5 rounded-full border border-cyan-100/70 bg-slate-950 shadow-[inset_-6px_0_0_rgba(255,255,255,0.75)]" />
         </span>
         <span>
           <span className="block text-xs uppercase tracking-[0.38em] text-cyan-100/50">Moonlit</span>
           <span className="block text-2xl font-semibold tracking-[-0.04em] text-white">Diary Vault</span>
         </span>
       </button>
+
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
-        <button
-          type="button"
-          onClick={onHome}
-          className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}
-        >
+        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
           Calendar
         </button>
-        <button
-          type="button"
-          onClick={onAIScreen}
-          className={cn(
-            "nav-button relative overflow-hidden group",
-            currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200",
-          )}
-        >
+        <button type="button" onClick={onAIScreen} className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}>
           <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
-          <span className="relative flex items-center gap-1">AI Hub</span>
+          <span className="relative flex items-center gap-1">✨ AI Hub</span>
         </button>
-        <button
-          type="button"
-          onClick={onYear}
-          className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}
-        >
+        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
           Year in pixels
         </button>
         <button type="button" onClick={onNewEntry} className="nav-button-primary">
@@ -1018,28 +885,6 @@ function TopBar({
         </button>
         <button type="button" onClick={onSync} className="nav-button">
           Sync
-        </button>
-        <button
-          type="button"
-          onClick={onOpenDrivePanel}
-          className={cn(
-            "nav-button relative flex items-center gap-2",
-            driveStatus === "connected" || driveStatus === "synced" ? "text-emerald-200/90" : "",
-          )}
-        >
-          <span
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              driveStatus === "synced" || driveStatus === "connected"
-                ? "bg-emerald-400"
-                : driveStatus === "syncing" || driveStatus === "connecting"
-                  ? "bg-amber-300 animate-pulse"
-                  : driveStatus === "error"
-                    ? "bg-rose-400"
-                    : "bg-white/30",
-            )}
-          />
-          Backup
         </button>
         <button type="button" onClick={onLock} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
           Lock
@@ -1058,6 +903,7 @@ function SyncBadge({ state }: { state: SyncState }) {
     saved: "Saved",
     error: "Needs attention",
   };
+
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-300">
       <span
@@ -1072,9 +918,6 @@ function SyncBadge({ state }: { state: SyncState }) {
   );
 }
 
-/* ==========================================================================
- HOME VIEW - Calendar + Selected day panel + View Entry button
- ========================================================================== */
 function HomeView({
   entryByDate,
   selectedDate,
@@ -1082,8 +925,6 @@ function HomeView({
   onSelectDate,
   onVisibleMonthChange,
   onOpenEntry,
-  onOpenViewEntry,
-  onShowMonthYearPicker,
 }: {
   entryByDate: Map<string, DiaryEntry>;
   selectedDate: string;
@@ -1091,28 +932,30 @@ function HomeView({
   onSelectDate: (dateKey: string) => void;
   onVisibleMonthChange: (date: Date) => void;
   onOpenEntry: (dateKey: string) => void;
-  onOpenViewEntry: (dateKey: string) => void;
-  onShowMonthYearPicker: () => void;
 }) {
   const selectedEntry = entryByDate.get(selectedDate);
   const monthEntries = [...entryByDate.values()].filter((entry) => {
     const date = keyToDate(entry.date);
     return date.getFullYear() === visibleMonth.getFullYear() && date.getMonth() === visibleMonth.getMonth();
   });
-  const monthLabel = MONTH_NAMES[visibleMonth.getMonth()];
+  const monthLabel = new Intl.DateTimeFormat("en", { month: "long" }).format(visibleMonth);
   const yearLabel = visibleMonth.getFullYear();
+
+  // Check if there's a draft for the selected date
   const hasDraft = useMemo(() => {
     const draft = loadDraft(selectedDate);
-    return (
-      draft !== null &&
-      (draft.title.trim() || draft.bodyHtml.trim() || draft.dailyWin.trim() || draft.attachments.length > 0)
+    return draft !== null && (
+      draft.title.trim() || 
+      draft.bodyHtml.trim() || 
+      draft.dailyWin.trim() ||
+      draft.attachments.length > 0
     );
   }, [selectedDate]);
 
-  // Manual #tags extracted from the entry body
+  // Dynamic tag compiler for current highlighted entry
   const entryTags = useMemo(() => {
     if (!selectedEntry) return [];
-    return extractManualTags(selectedEntry.bodyHtml, selectedEntry.title);
+    return extractTopicsAndTags(selectedEntry.bodyHtml, selectedEntry.title);
   }, [selectedEntry]);
 
   return (
@@ -1121,36 +964,15 @@ function HomeView({
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-3">
             <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Monthly calendar</p>
-            <button
-              type="button"
-              onClick={onShowMonthYearPicker}
-              className="group flex items-baseline gap-4 text-left transition hover:opacity-90"
-              aria-label="Open month and year picker"
-            >
-              <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl group-hover:text-cyan-100 transition">
-                {monthLabel}
-              </h1>
-              <span className="text-xl text-slate-400 group-hover:text-cyan-200 transition flex items-center gap-2">
-                {yearLabel}
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="opacity-70 group-hover:opacity-100"
-                >
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </span>
-            </button>
+            <div>
+              <h1 className="text-5xl font-semibold tracking-[-0.07em] text-white sm:text-7xl">{monthLabel}</h1>
+              <p className="mt-1 text-xl text-slate-400">{yearLabel}</p>
+            </div>
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
               Pick a day, write your entry, and the calendar marks it with the saved mood color.
             </p>
           </div>
+
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1177,6 +999,7 @@ function HomeView({
             </button>
           </div>
         </div>
+
         <MonthlyCalendar
           visibleMonth={visibleMonth}
           selectedDate={selectedDate}
@@ -1191,50 +1014,45 @@ function HomeView({
           onOpenEntry={onOpenEntry}
         />
       </div>
+
       <aside className="animate-float-in space-y-4">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Selected day</p>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight text-white">{formatDateLong(selectedDate)}</h2>
+
           {selectedEntry ? (
             <div className="mt-5 space-y-4">
               <div className="flex flex-wrap gap-2 items-center">
                 <MoodChip mood={selectedEntry.mood} />
-                {selectedEntry.aiAssessment ? (
-                  <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
-                    {selectedEntry.aiAssessment}
-                  </span>
-                ) : null}
+                <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300/90 border border-cyan-400/20">
+                  {detectSentimentLabel(selectedEntry.bodyHtml)}
+                </span>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Title</p>
                 <p className="mt-2 text-xl font-semibold text-white">{selectedEntry.title}</p>
               </div>
-              {entryTags.length > 0 ? (
+              
+              {entryTags.length > 0 && (
                 <div>
-                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Tags</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {entryTags.map((t) => (
-                      <span
-                        key={t}
-                        className="text-xs px-2.5 py-1 rounded-md bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
-                      >
-                        #{t}
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Auto Tags</p>
+                  <div className="flex flex-wrap gap-1">
+                    {entryTags.map(t => (
+                      <span key={t} className="text-xs px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-slate-300">
+                        {t.startsWith("#") ? t : `#${t}`}
                       </span>
                     ))}
                   </div>
                 </div>
-              ) : null}
+              )}
+
               <div>
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
                 <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
               </div>
-              <p className="line-clamp-4 text-sm leading-6 text-slate-400">
-                {htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}
-              </p>
+              <p className="line-clamp-4 text-sm leading-6 text-slate-400">{htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}</p>
               <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-                <span>
-                  {selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}
-                </span>
+                <span>{selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}</span>
                 <span>{formatBytes(totalAttachmentBytes(selectedEntry.attachments))}</span>
               </div>
             </div>
@@ -1242,15 +1060,11 @@ function HomeView({
             <div className="mt-5 space-y-4">
               <div className="rounded-3xl border border-amber-300/20 bg-amber-500/10 p-4">
                 <p className="text-sm text-amber-100/90 flex items-center gap-2">
-                  <span className="text-amber-300">â—</span>
+                  <span className="text-amber-300">📝</span>
                   You have an unsaved draft for this day
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => onOpenEntry(selectedDate)}
-                className="mt-2 w-full nav-button-primary justify-center py-4 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-400/30 hover:from-amber-500/30 hover:to-orange-500/30"
-              >
+              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-2 w-full nav-button-primary justify-center py-4 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-400/30 hover:from-amber-500/30 hover:to-orange-500/30">
                 Continue Editing Draft
               </button>
             </div>
@@ -1259,53 +1073,28 @@ function HomeView({
               No entry yet. Make this day visible in your calendar by saving a mood and a few lines.
             </div>
           )}
-          {selectedEntry ? (
-            <div className="mt-5 grid gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => onOpenViewEntry(selectedDate)}
-                className="w-full nav-button justify-center py-3.5"
-              >
-                View entry
-              </button>
-              <button
-                type="button"
-                onClick={() => onOpenEntry(selectedDate)}
-                className="w-full nav-button-primary justify-center py-3.5"
-              >
-                Edit entry
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onOpenEntry(selectedDate)}
-              className="mt-5 w-full nav-button-primary justify-center py-4"
-            >
-              {hasDraft ? "Continue draft" : "Write entry"}
-            </button>
-          )}
+
+          <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">
+            {selectedEntry ? "Edit entry" : hasDraft ? "Continue draft" : "Write entry"}
+          </button>
         </section>
+
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">This month</p>
               <p className="mt-2 text-3xl font-semibold tracking-tight text-white">{monthEntries.length}</p>
             </div>
-            <p className="max-w-[10rem] text-right text-sm leading-6 text-slate-400">
-              written day{monthEntries.length === 1 ? "" : "s"} saved to GitHub
-            </p>
+            <p className="max-w-[10rem] text-right text-sm leading-6 text-slate-400">written day{monthEntries.length === 1 ? "" : "s"} saved to GitHub</p>
           </div>
         </section>
+
         <MoodLegend />
       </aside>
     </section>
   );
 }
 
-/* ==========================================================================
- MONTHLY CALENDAR
- ========================================================================== */
 function MonthlyCalendar({
   visibleMonth,
   selectedDate,
@@ -1321,6 +1110,7 @@ function MonthlyCalendar({
 }) {
   const cells = buildMonthCells(visibleMonth);
   const todayKey = dateToKey(new Date());
+
   return (
     <div className="mt-8">
       <div className="grid grid-cols-7 gap-2 px-1 text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 sm:gap-3">
@@ -1328,6 +1118,7 @@ function MonthlyCalendar({
           <span key={day}>{day}</span>
         ))}
       </div>
+
       <div className="mt-3 grid grid-cols-7 gap-2 sm:gap-3">
         {cells.map((cell) => {
           const entry = entryByDate.get(cell.dateKey);
@@ -1335,6 +1126,7 @@ function MonthlyCalendar({
           const isSelected = cell.dateKey === selectedDate;
           const isToday = cell.dateKey === todayKey;
           const hasDraft = !entry && loadDraft(cell.dateKey) !== null;
+
           return (
             <button
               key={cell.dateKey}
@@ -1343,24 +1135,17 @@ function MonthlyCalendar({
               onDoubleClick={() => onOpenEntry(cell.dateKey)}
               className={cn(
                 "group relative aspect-square overflow-hidden rounded-[1.35rem] border text-left transition duration-300",
-                cell.inCurrentMonth
-                  ? "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]"
-                  : "border-white/[0.04] bg-white/[0.015] text-slate-600",
-                isSelected
-                  ? "scale-[1.02] border-cyan-200/70 bg-cyan-100/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]"
-                  : "",
+                cell.inCurrentMonth ? "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]" : "border-white/[0.04] bg-white/[0.015] text-slate-600",
+                isSelected ? "scale-[1.02] border-cyan-200/70 bg-cyan-100/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]" : "",
                 isToday ? "ring-1 ring-fuchsia-200/40" : "",
               )}
               style={isSelected && mood ? { boxShadow: `0 0 44px ${mood.glow}` } : undefined}
             >
               <span className="absolute inset-x-3 top-3 flex items-center justify-between">
-                <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>
-                  {cell.day}
-                </span>
-                {isToday ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" />
-                ) : null}
+                <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>{cell.day}</span>
+                {isToday ? <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" /> : null}
               </span>
+
               {entry ? (
                 <span
                   className="absolute bottom-3 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full transition duration-300 group-hover:scale-150"
@@ -1372,6 +1157,7 @@ function MonthlyCalendar({
                   title="Unsaved draft"
                 />
               ) : null}
+
               {entry ? (
                 <span
                   className="absolute inset-x-3 bottom-8 hidden truncate text-xs text-slate-400 opacity-0 transition group-hover:block group-hover:opacity-100 lg:block"
@@ -1388,16 +1174,11 @@ function MonthlyCalendar({
   );
 }
 
-/* ==========================================================================
- ENTRY EDITOR - manual #tags, real LLM-based emotion assessment
- ========================================================================== */
 function EntryEditor({
   dateKey,
   entry,
   entryByDate,
   syncState,
-  assessmentCache,
-  onUpdateAssessmentCache,
   onBack,
   onSave,
   onDelete,
@@ -1407,14 +1188,14 @@ function EntryEditor({
   entry?: DiaryEntry;
   entryByDate: Map<string, DiaryEntry>;
   syncState: SyncState;
-  assessmentCache: Record<string, string>;
-  onUpdateAssessmentCache: (dateKey: string, label: string) => void;
   onBack: () => void;
   onSave: (entry: DiaryEntry) => Promise<void>;
   onDelete: (dateKey: string) => Promise<void>;
   onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
 }) {
+  // Load existing draft or use entry data
   const existingDraft = useMemo(() => loadDraft(dateKey), [dateKey]);
+  
   const [title, setTitle] = useState(existingDraft?.title ?? entry?.title ?? "");
   const [mood, setMood] = useState<MoodId>(existingDraft?.mood ?? entry?.mood ?? "happy");
   const [bodyHtml, setBodyHtml] = useState(existingDraft?.bodyHtml ?? entry?.bodyHtml ?? "");
@@ -1423,39 +1204,65 @@ function EntryEditor({
   const [localError, setLocalError] = useState("");
   const [isWorking, setIsWorking] = useState(false);
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
+  const [aiComputedTags, setAIComputedTags] = useState<string[] | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<string>("");
-  const [aiAssessment, setAiAssessment] = useState<string>(assessmentCache[dateKey] ?? entry?.aiAssessment ?? "");
-  const [isAssessing, setIsAssessing] = useState(false);
-
+  
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
-  const autoSaveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Known tags across ALL entries - powers the #tag dropdown
-  const knownTags = useMemo(() => {
-    const set = new Set<string>();
-    entryByDate.forEach((e) => {
-      extractManualTags(e.bodyHtml, e.title).forEach((t) => set.add(t));
-    });
-    return Array.from(set).sort();
-  }, [entryByDate]);
+  const localComputedTags = useMemo(() => {
+    return extractTopicsAndTags(bodyHtml, title);
+  }, [bodyHtml, title]);
+  const computedTags = aiComputedTags ?? localComputedTags;
 
-  // Tags extracted from the current entry's body - drives the chip display
-  const currentTags = useMemo(() => extractManualTags(bodyHtml, title), [bodyHtml, title]);
+  useEffect(() => {
+    const plainText = `${title} ${htmlToText(bodyHtml)}`.trim();
+    if (plainText.length < 18) {
+      setAIComputedTags(null);
+      return;
+    }
 
+    let isCancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const aiTags = await generateAITopicTags(
+          { title, bodyHtml },
+          Array.from(entryByDate.values()),
+        );
+        if (!isCancelled) {
+          const mergedTags = mergeTopicTags(aiTags, localComputedTags).slice(0, 8);
+          setAIComputedTags(mergedTags.length > 0 ? mergedTags : null);
+        }
+      } catch {
+        if (!isCancelled) setAIComputedTags(null);
+      }
+    }, 700);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [bodyHtml, entryByDate, localComputedTags, title]);
+
+  // Track if we have unsaved changes compared to last draft save
   const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
+  
   useEffect(() => {
     setHasUnsavedChanges(currentDraftState !== lastSavedDraft);
   }, [currentDraftState, lastSavedDraft]);
 
+  // Initialize lastSavedDraft when existing draft or entry is loaded
   useEffect(() => {
-    setLastSavedDraft(currentDraftState);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const initialState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
+    setLastSavedDraft(initialState);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-save draft to localStorage every second when there are changes
   useEffect(() => {
     if (!hasUnsavedChanges) return;
+    
     autoSaveIntervalRef.current = setTimeout(() => {
       const draft: DraftEntry = {
         dateKey,
@@ -1470,6 +1277,7 @@ function EntryEditor({
       setLastSavedDraft(currentDraftState);
       setHasUnsavedChanges(false);
     }, 1000);
+
     return () => {
       if (autoSaveIntervalRef.current) {
         clearTimeout(autoSaveIntervalRef.current);
@@ -1477,35 +1285,7 @@ function EntryEditor({
     };
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, hasUnsavedChanges, currentDraftState]);
 
-  // AI Emotion Assessment - debounced LLM call, result cached per-entry
-  useEffect(() => {
-    const plain = htmlToText(bodyHtml).trim();
-    if (plain.length < 8) {
-      setAiAssessment("");
-      return;
-    }
-
-    const cached = assessmentCache[dateKey];
-    if (cached) setAiAssessment(cached); // show cache instantly
-
-    const handle = setTimeout(async () => {
-      setIsAssessing(true);
-      try {
-        const label = await assessEntryEmotion({ title, bodyHtml, date: dateKey });
-        // Only overwrite if we got a real human label (not the unavailable sentinel)
-        if (label && label.trim() && label !== "AI unavailable") {
-          setAiAssessment(label);
-          onUpdateAssessmentCache(dateKey, label);
-        }
-      } finally {
-        setIsAssessing(false);
-      }
-    }, 1500); // 1.5s debounce while typing
-
-    return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodyHtml, title, dateKey]);
-
+  // FIXED STEP 4 LOGIC: Replaced local template mocks with real dynamic Llama 3 contextual generations
   async function triggerAIPrompt() {
     setAIPrompt("Consulting your timeline memory...");
     try {
@@ -1513,28 +1293,41 @@ function EntryEditor({
       const customQuestion = await generateAICustomQuestion(allEntries);
       setAIPrompt(customQuestion);
     } catch (err) {
-      setAIPrompt("What's on your mind today? Tell me how your day went.");
+      setAIPrompt("Your recent entries seem to be pointing at something unfinished. What part of it needs honesty instead of more overthinking?");
     }
   }
 
   async function handleSave() {
     setLocalError("");
     setIsWorking(true);
+
     try {
-      const plainBody = htmlToText(bodyHtml).trim();
       const now = new Date().toISOString();
+      const nextTitle = title.trim() || "Untitled entry";
+      const nextBodyHtml = sanitizeHtml(bodyHtml).trim();
+      const nextEntryForHash = {
+        date: dateKey,
+        title: nextTitle,
+        bodyHtml: nextBodyHtml,
+        dailyWin: dailyWin.trim(),
+      };
+      const nextIndexHash = createSearchIndexContentHash(nextEntryForHash);
+      const existingSearchIndex = entry?.aiSearchIndex?.contentHash === nextIndexHash ? entry.aiSearchIndex : null;
       const nextEntry: DiaryEntry = {
         id: entry?.id ?? createId(),
         date: dateKey,
-        title: title.trim() || "Untitled entry",
+        title: nextTitle,
         mood,
-        bodyHtml: sanitizeHtml(bodyHtml).trim(),
+        bodyHtml: nextBodyHtml,
         dailyWin: dailyWin.trim(),
         attachments,
         createdAt: entry?.createdAt ?? now,
         updatedAt: now,
-        aiAssessment: aiAssessment || entry?.aiAssessment,
+        aiSearchIndex: existingSearchIndex,
+        aiSearchIndexStatus: existingSearchIndex ? "indexed" : "pending",
+        aiSearchIndexError: undefined,
       };
+
       await onSave(nextEntry);
     } catch (error) {
       setLocalError(getErrorMessage(error));
@@ -1547,6 +1340,7 @@ function EntryEditor({
     if (!entry) return;
     const confirmed = window.confirm("Delete this diary entry from the GitHub vault file?");
     if (!confirmed) return;
+
     setLocalError("");
     setIsWorking(true);
     try {
@@ -1558,7 +1352,9 @@ function EntryEditor({
     }
   }
 
+  // Warn user before navigating away with unsaved changes
   const handleBack = useCallback(() => {
+    // Save draft immediately before going back
     if (title.trim() || bodyHtml.trim() || dailyWin.trim() || attachments.length > 0) {
       const draft: DraftEntry = {
         dateKey,
@@ -1592,6 +1388,8 @@ function EntryEditor({
             </button>
           </div>
         </div>
+
+        {/* Auto-save indicator */}
         <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
           {hasUnsavedChanges ? (
             <span className="flex items-center gap-1.5 text-amber-400/70">
@@ -1605,88 +1403,70 @@ function EntryEditor({
             </span>
           )}
         </div>
+
+        {/* AI Prompt Journaling Assistant Panel widget */}
         <div className="mt-4 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">
-            ASSISTANT v1.1
-          </div>
+          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
           <div className="flex items-center justify-between gap-4">
             <div>
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.
-              </p>
+              <p className="text-xs text-slate-400 mt-0.5">Tap for a sharper prompt based on patterns, contradictions, and unfinished emotional threads.</p>
             </div>
-            <button
-              type="button"
-              onClick={triggerAIPrompt}
+            <button 
+              type="button" 
+              onClick={triggerAIPrompt} 
               className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
             >
               Generate Prompt
             </button>
           </div>
-          {aiPrompt ? (
+          {aiPrompt && (
             <div className="mt-3 bg-black/40 rounded-xl p-3 border border-white/5 animate-fade-in text-sm text-slate-200 italic leading-relaxed">
               "{aiPrompt}"
             </div>
-          ) : null}
+          )}
         </div>
+
         <div className="mt-6 space-y-5">
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
-            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">
-              {formatDateLong(dateKey)}
-            </span>
-            <span
-              className={cn(
-                "text-xs bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10",
-                isAssessing ? "text-cyan-300/60 animate-pulse" : "text-cyan-300/70",
-              )}
-            >
-              AI Assessment: {isAssessing ? "reading your vibeâ€¦" : aiAssessment || " - "}
+            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
+            <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
+              AI Assessment: {detectSentimentLabel(bodyHtml)}
             </span>
           </div>
+
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Give today a title"
             className="w-full border-none bg-transparent text-4xl font-semibold tracking-[-0.06em] text-white outline-none placeholder:text-slate-700 sm:text-6xl"
           />
-          <RichTextEditor value={bodyHtml} onChange={setBodyHtml} knownTags={knownTags} />
-          {currentTags.length > 0 ? (
+
+          <RichTextEditor value={bodyHtml} onChange={setBodyHtml} />
+
+          {/* Extracted Topic clouds list display area */}
+          {computedTags.length > 0 && (
             <div className="pt-2">
-              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
+              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Auto-Attached Topics & Clouds</span>
               <div className="flex flex-wrap gap-1.5">
-                {currentTags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
-                  >
+                {computedTags.map(tag => (
+                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-cyan-200/90">
                     #{tag}
                   </span>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">
-                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entry to add tags. Press
-                space or enter to confirm.
-              </p>
-            </div>
-          ) : (
-            <div className="pt-2">
-              <p className="text-[11px] text-slate-500">
-                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#tagname</code> in your entry to organize
-                it. Press space or enter to confirm.
-              </p>
             </div>
           )}
         </div>
+
         {localError ? <SyncError message={localError} compact /> : null}
       </div>
+
       <aside className="space-y-4">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            Pick the color that will light up this day in the calendar and year view.
-          </p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
           <div className="mt-5 grid gap-2">
             {MOODS.map((item) => (
               <button
@@ -1695,15 +1475,10 @@ function EntryEditor({
                 onClick={() => setMood(item.id)}
                 className={cn(
                   "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
-                  item.id === mood
-                    ? "border-white/30 bg-white/[0.09]"
-                    : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
+                  item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
                 )}
               >
-                <span
-                  className="h-4 w-4 rounded-full"
-                  style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }}
-                />
+                <span className="h-4 w-4 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium text-white">{item.label}</span>
                   <span className="block truncate text-xs text-slate-500">{item.description}</span>
@@ -1712,10 +1487,8 @@ function EntryEditor({
             ))}
           </div>
         </section>
-        <section
-          className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl"
-          style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}
-        >
+
+        <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
           <textarea
             value={dailyWin}
@@ -1725,197 +1498,16 @@ function EntryEditor({
             className="mt-4 min-h-36 w-full resize-none rounded-3xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/50 focus:bg-black/35"
           />
         </section>
+
         <AttachmentPanel attachments={attachments} onChange={setAttachments} onOpenLightbox={onOpenLightbox} />
       </aside>
     </section>
   );
 }
 
-/* ==========================================================================
- VIEW ENTRY SCREEN - read-only, no edit / delete affordances
- ========================================================================== */
-function ViewEntryScreen({
-  dateKey,
-  entry,
-  assessmentCache,
-  onBack,
-  onSwitchToEdit,
-  onOpenLightbox,
-}: {
-  dateKey: string;
-  entry?: DiaryEntry;
-  assessmentCache: Record<string, string>;
-  onBack: () => void;
-  onSwitchToEdit: () => void;
-  onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
-}) {
-  if (!entry) {
-    return (
-      <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-6 shadow-2xl shadow-black/40 backdrop-blur-2xl">
-          <button type="button" onClick={onBack} className="round-button w-fit">
-            Back to calendar
-          </button>
-          <div className="mt-6 rounded-3xl border border-dashed border-white/15 bg-black/20 p-10 text-center text-slate-400">
-            <p className="text-lg">No entry exists for this day.</p>
-            <p className="mt-2 text-sm text-slate-500">Use "Write entry" from the calendar to start one.</p>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  const tags = extractManualTags(entry.bodyHtml, entry.title);
-  const assessment = assessmentCache[dateKey] || entry.aiAssessment || "";
-  const mood = MOOD_BY_ID[entry.mood];
-  const totalBytes = totalAttachmentBytes(entry.attachments);
-
-  return (
-    <section className="grid animate-screen-in gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <button type="button" onClick={onBack} className="round-button w-fit">
-            Back to calendar
-          </button>
-          <div className="flex items-center gap-2">
-            <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[10px] uppercase tracking-[0.32em] text-slate-400">
-              Read-only view
-            </span>
-            <button type="button" onClick={onSwitchToEdit} className="nav-button-primary py-3">
-              Edit entry
-            </button>
-          </div>
-        </div>
-        <div className="mt-6 space-y-5">
-          <div className="flex flex-wrap items-center gap-3">
-            <MoodChip mood={entry.mood} />
-            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">
-              {formatDateLong(dateKey)}
-            </span>
-            {assessment ? (
-              <span className="text-xs text-cyan-300/70 bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10">
-                AI Assessment: {assessment}
-              </span>
-            ) : null}
-          </div>
-          <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">{entry.title}</h1>
-
-          <div
-            className="diary-prose min-h-[18rem] text-base leading-8 text-slate-200"
-            dangerouslySetInnerHTML={{ __html: sanitizeHtmlWithTagChips(entry.bodyHtml) }}
-          />
-
-          {tags.length > 0 ? (
-            <div className="pt-3 border-t border-white/10">
-              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
-              <div className="flex flex-wrap gap-1.5">
-                {tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
-                  >
-                    #{tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      </div>
-      <aside className="space-y-4">
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
-          <p className="mt-3 text-sm leading-7 text-slate-300 whitespace-pre-wrap">
-            {entry.dailyWin || "No daily win added yet."}
-          </p>
-        </section>
-        <section
-          className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl"
-          style={{ boxShadow: `0 0 38px ${mood.glow}` }}
-        >
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
-          <div className="mt-4 flex items-center gap-3">
-            <span
-              className="h-4 w-4 rounded-full"
-              style={{ backgroundColor: mood.color, boxShadow: `0 0 18px ${mood.glow}` }}
-            />
-            <span className="font-medium text-white">{mood.label}</span>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">{mood.description}</p>
-        </section>
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-          <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-            {entry.attachments.length} file{entry.attachments.length === 1 ? "" : "s"} Â· {formatBytes(totalBytes)}
-          </div>
-          <div className="mt-4 grid gap-3">
-            {entry.attachments.map((attachment, idx) => (
-              <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
-                <button
-                  type="button"
-                  onClick={() => onOpenLightbox(entry.attachments, idx)}
-                  className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
-                >
-                  {attachment.type.startsWith("image/") ? (
-                    <img
-                      src={attachment.dataUrl}
-                      alt={attachment.name}
-                      className="h-full w-full object-cover transition group-hover:opacity-80"
-                    />
-                  ) : (
-                    <video src={attachment.dataUrl} className="h-full w-full object-cover" />
-                  )}
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
-                    <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
-                      View fullscreen
-                    </span>
-                  </span>
-                </button>
-                <div className="flex items-center justify-between gap-3 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
-                    <p className="text-xs text-slate-500">{formatBytes(attachment.size)}</p>
-                  </div>
-                  <a
-                    href={attachment.dataUrl}
-                    download={attachment.name}
-                    className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-cyan-300/40 hover:bg-cyan-400/10 hover:text-cyan-100"
-                  >
-                    Download
-                  </a>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-/* ==========================================================================
- RICH TEXT EDITOR + #tag dropdown picker
- ========================================================================== */
-function RichTextEditor({
-  value,
-  onChange,
-  knownTags,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  knownTags: string[];
-}) {
-  const editorRef = useRef<HTMLDivElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
+function RichTextEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const [isFocused, setIsFocused] = useState(false);
-  const [tagPicker, setTagPicker] = useState<{
-    open: boolean;
-    query: string;
-    top: number;
-    left: number;
-    startOffset: number;
-  }>({ open: false, query: "", top: 0, left: 0, startOffset: 0 });
-  const [activeSuggestion, setActiveSuggestion] = useState(0);
 
   useEffect(() => {
     if (editorRef.current && editorRef.current.innerHTML !== value) {
@@ -1923,40 +1515,10 @@ function RichTextEditor({
     }
   }, [value]);
 
-  // Build filtered suggestions based on the current query
-  const suggestions = useMemo(() => {
-    if (!tagPicker.open) return [] as { tag: string; isNew: boolean }[];
-    const q = tagPicker.query.toLowerCase();
-    const matched = knownTags.filter((t) => t.toLowerCase().startsWith(q));
-    const filtered: { tag: string; isNew: boolean }[] = matched.map((tag) => ({ tag, isNew: false }));
-    const hasExact = matched.some((m) => m.toLowerCase() === q);
-    if (q.length > 0 && !hasExact) {
-      filtered.push({ tag: tagPicker.query, isNew: true });
-    }
-    return filtered.slice(0, 8);
-  }, [tagPicker, knownTags]);
-
-  useEffect(() => {
-    setActiveSuggestion(0);
-  }, [tagPicker.query, tagPicker.open]);
-
-  // Close the picker when clicking outside the editor
-  useEffect(() => {
-    function handleDocClick(event: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(event.target as Node)) {
-        setTagPicker((p) => ({ ...p, open: false }));
-      }
-    }
-    document.addEventListener("mousedown", handleDocClick);
-    return () => document.removeEventListener("mousedown", handleDocClick);
-  }, []);
-
   function runCommand(command: string, commandValue?: string) {
     editorRef.current?.focus();
     document.execCommand(command, false, commandValue);
     onChange(editorRef.current?.innerHTML ?? "");
-    detectTagTrigger();
   }
 
   function addLink() {
@@ -1965,185 +1527,36 @@ function RichTextEditor({
     runCommand("createLink", url);
   }
 
-  // Compute the text content of the editor up to the caret position
-  function getTextBeforeCaret(): { text: string; node: Node | null; offset: number } {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0 || !editorRef.current) return { text: "", node: null, offset: 0 };
-    const range = sel.getRangeAt(0);
-    const pre = range.cloneRange();
-    pre.selectNodeContents(editorRef.current);
-    pre.setEnd(range.endContainer, range.endOffset);
-    return { text: pre.toString(), node: range.endContainer, offset: range.endOffset };
-  }
-
-  // Detect whether the user just typed `#` and is starting a tag token.
-  function detectTagTrigger() {
-    if (!editorRef.current) return;
-    const { text } = getTextBeforeCaret();
-    // Match "#" possibly preceded by whitespace/start, followed by optional letters/digits/underscore/hyphen
-    const match = text.match(/(^|\s)#([\w-]*)$/);
-    if (!match || match.index === undefined) {
-      setTagPicker((p) => ({ ...p, open: false }));
-      return;
-    }
-    const query = match[2];
-    // Position the dropdown near the caret
-    const sel = window.getSelection();
-    let rect: DOMRect | null = null;
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0).cloneRange();
-      range.collapse(true);
-      // Insert a zero-width marker so we can measure its position safely
-      const marker = document.createElement("span");
-      marker.appendChild(document.createTextNode("\u200B"));
-      range.insertNode(marker);
-      rect = marker.getBoundingClientRect();
-      marker.remove();
-    }
-    const wrapperRect = wrapperRef.current?.getBoundingClientRect();
-    const top = (rect ? rect.bottom : 0) - (wrapperRect?.top ?? 0) + 6;
-    const left = (rect ? rect.left : 0) - (wrapperRect?.left ?? 0);
-    setTagPicker({
-      open: true,
-      query,
-      top,
-      left,
-      startOffset: match.index + match[1].length, // index of the '#'
-    });
-  }
-
-  // Delete the partial `#query` token and replace with the chosen tag
-  function applyTag(tagName: string) {
-    if (!editorRef.current) return;
-    const editor = editorRef.current;
-    editor.focus();
-    const { text } = getTextBeforeCaret();
-    const match = text.match(/(^|\s)#([\w-]*)$/);
-    if (!match || match.index === undefined) return;
-    const hashIndex = match.index + match[1].length;
-    const totalToDelete = match[0].length - match[1].length; // characters including '#'
-
-    // Move caret to end, then delete backwards the required number of chars
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const caretRange = sel.getRangeAt(0);
-    // Set selection from (caret - totalToDelete) to caret
-    const startRange = document.createRange();
-    startRange.setStart(caretRange.endContainer, Math.max(0, caretRange.endOffset - totalToDelete));
-    startRange.setEnd(caretRange.endContainer, caretRange.endOffset);
-    sel.removeAllRanges();
-    sel.addRange(startRange);
-    document.execCommand("insertText", false, `#${tagName} `);
-    onChange(editor.innerHTML);
-    setTagPicker({ open: false, query: "", top: 0, left: 0, startOffset: hashIndex });
-  }
-
-  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (tagPicker.open && suggestions.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveSuggestion((i) => (i + 1) % suggestions.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveSuggestion((i) => (i - 1 + suggestions.length) % suggestions.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        const pick = suggestions[activeSuggestion];
-        if (pick) applyTag(pick.tag);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setTagPicker((p) => ({ ...p, open: false }));
-        return;
-      }
-    }
-    // Confirm a new tag when user hits space - commit `#query` if it doesn't match an existing tag exactly
-    if (event.key === " " || event.key === "Enter") {
-      const { text } = getTextBeforeCaret();
-      const match = text.match(/(^|\s)#([\w-]+)$/);
-      if (match) {
-        const tagName = match[2].toLowerCase();
-        // It's already inserted into the text - no special action needed beyond closing the picker.
-        setTagPicker((p) => ({ ...p, open: false }));
-      }
-    }
-  }
-
   return (
-    <div ref={wrapperRef} className="relative">
-      <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-black/25">
-        <div className="flex flex-wrap gap-2 border-b border-white/10 bg-white/[0.035] p-3">
-          <ToolbarButton label="P" onClick={() => runCommand("formatBlock", "P")} />
-          <ToolbarButton label="H1" onClick={() => runCommand("formatBlock", "H1")} />
-          <ToolbarButton label="H2" onClick={() => runCommand("formatBlock", "H2")} />
-          <ToolbarButton label="B" onClick={() => runCommand("bold")} strong />
-          <ToolbarButton label="I" onClick={() => runCommand("italic")} italic />
-          <ToolbarButton label="U" onClick={() => runCommand("underline")} underline />
-          <ToolbarButton label="List" onClick={() => runCommand("insertUnorderedList")} />
-          <ToolbarButton label="Number" onClick={() => runCommand("insertOrderedList")} />
-          <ToolbarButton label="Quote" onClick={() => runCommand("formatBlock", "BLOCKQUOTE")} />
-          <ToolbarButton label="Link" onClick={addLink} />
-          <ToolbarButton label="Clear" onClick={() => runCommand("removeFormat")} />
-        </div>
-        <div className="relative">
-          {!htmlToText(value) && !isFocused ? (
-            <div className="pointer-events-none absolute left-5 top-5 text-slate-600">
-              Start writing what happened today...
-            </div>
-          ) : null}
-          <div
-            ref={editorRef}
-            contentEditable
-            suppressContentEditableWarning
-            onInput={() => {
-              onChange(editorRef.current?.innerHTML ?? "");
-              detectTagTrigger();
-            }}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            className="diary-prose min-h-[24rem] px-5 py-5 text-base leading-8 text-slate-200 outline-none sm:min-h-[30rem]"
-          />
-        </div>
+    <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-black/25">
+      <div className="flex flex-wrap gap-2 border-b border-white/10 bg-white/[0.035] p-3">
+        <ToolbarButton label="P" onClick={() => runCommand("formatBlock", "P")} />
+        <ToolbarButton label="H1" onClick={() => runCommand("formatBlock", "H1")} />
+        <ToolbarButton label="H2" onClick={() => runCommand("formatBlock", "H2")} />
+        <ToolbarButton label="B" onClick={() => runCommand("bold")} strong />
+        <ToolbarButton label="I" onClick={() => runCommand("italic")} italic />
+        <ToolbarButton label="U" onClick={() => runCommand("underline")} underline />
+        <ToolbarButton label="List" onClick={() => runCommand("insertUnorderedList")} />
+        <ToolbarButton label="Number" onClick={() => runCommand("insertOrderedList")} />
+        <ToolbarButton label="Quote" onClick={() => runCommand("formatBlock", "BLOCKQUOTE")} />
+        <ToolbarButton label="Link" onClick={addLink} />
+        <ToolbarButton label="Clear" onClick={() => runCommand("removeFormat")} />
       </div>
-      {tagPicker.open && suggestions.length > 0 ? (
+
+      <div className="relative">
+        {!htmlToText(value) && !isFocused ? (
+          <div className="pointer-events-none absolute left-5 top-5 text-slate-600">Start writing what happened today...</div>
+        ) : null}
         <div
-          className="absolute z-30 w-64 max-h-72 overflow-y-auto rounded-2xl border border-cyan-400/30 bg-slate-950/95 shadow-2xl shadow-black/50 backdrop-blur-xl"
-          style={{ top: tagPicker.top, left: Math.max(0, tagPicker.left) }}
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          <div className="px-3 py-2 text-[10px] uppercase tracking-[0.25em] text-cyan-300/70 border-b border-white/10">
-            {tagPicker.query ? `Tags starting with "#${tagPicker.query}"` : "Existing tags"}
-          </div>
-          {suggestions.map((s, idx) => (
-            <button
-              key={`${s.tag}-${idx}`}
-              type="button"
-              onClick={() => applyTag(s.tag)}
-              onMouseEnter={() => setActiveSuggestion(idx)}
-              className={cn(
-                "flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition",
-                idx === activeSuggestion ? "bg-cyan-500/15 text-cyan-100" : "text-slate-200 hover:bg-white/[0.06]",
-              )}
-            >
-              <span className="truncate">
-                <span className="text-cyan-300/70">#</span>
-                {s.tag}
-              </span>
-              {s.isNew ? (
-                <span className="text-[10px] uppercase tracking-widest text-fuchsia-300/80">new</span>
-              ) : (
-                <span className="text-[10px] text-slate-500">â†µ</span>
-              )}
-            </button>
-          ))}
-        </div>
-      ) : null}
+          ref={editorRef}
+          contentEditable
+          suppressContentEditableWarning
+          onInput={() => onChange(editorRef.current?.innerHTML ?? "")}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          className="diary-prose min-h-[24rem] px-5 py-5 text-base leading-8 text-slate-200 outline-none sm:min-h-[30rem]"
+        />
+      </div>
     </div>
   );
 }
@@ -2180,18 +1593,7 @@ function ToolbarButton({
   );
 }
 
-/* ==========================================================================
- ATTACHMENT PANEL
- ========================================================================== */
-function AttachmentPanel({
-  attachments,
-  onChange,
-  onOpenLightbox,
-}: {
-  attachments: Attachment[];
-  onChange: (attachments: Attachment[]) => void;
-  onOpenLightbox: (attachments: Attachment[], startIndex: number) => void;
-}) {
+function AttachmentPanel({ attachments, onChange, onOpenLightbox }: { attachments: Attachment[]; onChange: (attachments: Attachment[]) => void; onOpenLightbox: (attachments: Attachment[], startIndex: number) => void }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -2202,21 +1604,28 @@ function AttachmentPanel({
     const files = event.target.files;
     if (!files?.length) return;
     setError("");
+
+    // Validate file sizes (500MB limit per file)
     const oversizedFiles: string[] = [];
-    Array.from(files).forEach((file) => {
+    Array.from(files).forEach(file => {
       if (file.size > MAX_FILE_SIZE_BYTES) {
         oversizedFiles.push(`${file.name} (${formatBytes(file.size)})`);
       }
     });
+
     if (oversizedFiles.length > 0) {
       setError(`These files exceed the 500MB limit: ${oversizedFiles.join(", ")}`);
       event.target.value = "";
       return;
     }
+
     setIsLoading(true);
     setLoadingProgress("Preparing to load files...");
+
     try {
-      const nextAttachments = await filesToAttachments(files, (progress) => setLoadingProgress(progress));
+      const nextAttachments = await filesToAttachments(files, (progress) => {
+        setLoadingProgress(progress);
+      });
       onChange([...attachments, ...nextAttachments]);
     } catch (readError) {
       setError(getErrorMessage(readError));
@@ -2229,52 +1638,40 @@ function AttachmentPanel({
 
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*,video/*"
-        multiple
-        className="hidden"
-        onChange={handleFileChange}
-      />
+      <input ref={inputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleFileChange} />
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB
-            (base64 adds overhead).
-          </p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB (base64 adds overhead).</p>
         </div>
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={isLoading}
-          className="round-button shrink-0"
-        >
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
           {isLoading ? "Loading..." : "Add"}
         </button>
       </div>
-      {loadingProgress ? (
+
+      {loadingProgress && (
         <div className="mt-3 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200/80 animate-pulse">
           {loadingProgress}
         </div>
-      ) : null}
+      )}
+
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
         {attachments.length} file{attachments.length === 1 ? "" : "s"} / {formatBytes(totalBytes)}
       </div>
+
       {totalBytes > 50 * 1024 * 1024 ? (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail
-          to save.
+          ⚠️ GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail to save.
           {totalBytes > 75 * 1024 * 1024 ? (
             <strong className="block mt-1 text-rose-300">
-              Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500).
-              Consider removing larger videos.
+              ⚠️ Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500). Consider removing larger videos.
             </strong>
           ) : null}
         </p>
       ) : null}
+
       {error ? <SyncError message={error} compact /> : null}
+
       <div className="mt-4 grid gap-3">
         {attachments.map((attachment, idx) => (
           <div key={attachment.id} className="overflow-hidden rounded-3xl border border-white/10 bg-black/25">
@@ -2284,11 +1681,7 @@ function AttachmentPanel({
               className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
             >
               {attachment.type.startsWith("image/") ? (
-                <img
-                  src={attachment.dataUrl}
-                  alt={attachment.name}
-                  className="h-full w-full object-cover transition group-hover:opacity-80"
-                />
+                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
               ) : (
                 <video src={attachment.dataUrl} className="h-full w-full object-cover" />
               )}
@@ -2328,9 +1721,6 @@ function AttachmentPanel({
   );
 }
 
-/* ==========================================================================
- YEAR PIXELS VIEW
- ========================================================================== */
 function YearPixelsView({
   year,
   entryByDate,
@@ -2346,6 +1736,7 @@ function YearPixelsView({
 }) {
   const months = useMemo(() => Array.from({ length: 12 }, (_, monthIndex) => new Date(year, monthIndex, 1)), [year]);
   const writtenDays = [...entryByDate.values()].filter((entry) => keyToDate(entry.date).getFullYear() === year).length;
+
   return (
     <section className="animate-screen-in space-y-5">
       <div className="rounded-[2rem] border border-white/10 bg-slate-950/65 p-5 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6">
@@ -2354,10 +1745,10 @@ function YearPixelsView({
             <p className="text-sm uppercase tracking-[0.5em] text-fuchsia-200/50">Year in pixels</p>
             <h1 className="text-6xl font-semibold tracking-[-0.08em] text-white sm:text-8xl">{year}</h1>
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional
-              map.
+              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.
             </p>
           </div>
+
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={onBack} className="round-button">
               Back
@@ -2373,25 +1764,19 @@ function YearPixelsView({
             </button>
           </div>
         </div>
+
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-slate-400">
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">
-            {writtenDays} written day{writtenDays === 1 ? "" : "s"}
-          </span>
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">
-            Click any pixel to open that date
-          </span>
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">{writtenDays} written day{writtenDays === 1 ? "" : "s"}</span>
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">Click any pixel to open that date</span>
         </div>
       </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {months.map((monthDate) => (
-          <MonthPixelPanel
-            key={monthDate.toISOString()}
-            monthDate={monthDate}
-            entryByDate={entryByDate}
-            onOpenEntry={onOpenEntry}
-          />
+          <MonthPixelPanel key={monthDate.toISOString()} monthDate={monthDate} entryByDate={entryByDate} onOpenEntry={onOpenEntry} />
         ))}
       </div>
+
       <MoodLegend />
     </section>
   );
@@ -2406,8 +1791,9 @@ function MonthPixelPanel({
   entryByDate: Map<string, DiaryEntry>;
   onOpenEntry: (dateKey: string) => void;
 }) {
-  const monthName = MONTH_NAMES[monthDate.getMonth()];
+  const monthName = new Intl.DateTimeFormat("en", { month: "long" }).format(monthDate);
   const cells = buildMonthCells(monthDate);
+
   return (
     <section className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-4 backdrop-blur-2xl transition duration-300 hover:bg-white/[0.055]">
       <div className="mb-3 flex items-center justify-between">
@@ -2441,165 +1827,126 @@ function MonthPixelPanel({
 }
 
 /* ==========================================================================
- AI INTELLIGENCE VIEW - manual tag filter, no Automatic Topic Cloud
- ========================================================================== */
-function IndexingStatusPill({
-  active,
-  indexedCount,
-  total,
-  allIndexed,
-  progress,
-  onRetry,
-}: {
-  active: boolean;
-  indexedCount: number;
-  total: number;
-  allIndexed: boolean;
-  progress: { attempted: number; total: number };
-  onRetry: () => void;
-}) {
-  if (total === 0) return null;
-
-  if (active) {
-    // Prefer the attempted-count from the live sweep (moves even through failures) -
-    // fall back to indexedCount only if a progress batch isn't in flight (e.g. a lone
-    // per-entry background index after a save, which has no batch total of its own).
-    const shownProgress = progress.total > 0 ? progress.attempted : indexedCount;
-    const shownTotal = progress.total > 0 ? progress.total : total;
-    return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200">
-        <span className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300" />
-        Checked {shownProgress} of {shownTotal}â€¦
-      </span>
-    );
-  }
-
-  if (allIndexed) {
-    return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200">
-        <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-emerald-400 text-[8px] font-bold text-emerald-950">
-          âœ“
-        </span>
-        All entries indexed
-      </span>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onRetry}
-      className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/20"
-      title="Some entries couldn't be indexed (likely rate-limited) - click to retry"
-    >
-      <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-amber-400 text-[8px] font-bold text-amber-950">
-        âœ•
-      </span>
-      {indexedCount}/{total} indexed - retry
-    </button>
-  );
-}
-
+   AI INTELLIGENCE VIEW: SEMANTIC SEARCH WITH CLICKABLE DATES
+   ========================================================================== */
 function AIIntelligenceView({
   entries,
-  entryByDate,
-  onJumpToEntry,
-  indexingActive,
-  indexingProgress,
+  initialTagFilter,
+  indexingState,
   onRetryIndexing,
+  onJumpToEntry,
 }: {
   entries: DiaryEntry[];
-  entryByDate: Map<string, DiaryEntry>;
-  onJumpToEntry: (dateKey: string) => void;
-  indexingActive: boolean;
-  indexingProgress: { attempted: number; total: number };
+  initialTagFilter: string | null;
+  indexingState: SearchIndexingState;
   onRetryIndexing: () => void;
+  onJumpToEntry: (dateKey: string) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeTag, setActiveTag] = useState<string | null>(initialTagFilter);
+  
+  // States for AI response with clickable dates
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const [aiTagsByEntryId, setAITagsByEntryId] = useState<Record<string, string[]>>({});
 
-  const lastSearchAtRef = useRef(0);
-  const SEARCH_DEBOUNCE_MS = 1000;
+  const localTagsByEntryId = useMemo(() => {
+    return entries.reduce<Record<string, string[]>>((acc, item) => {
+      acc[item.id] = extractTopicsAndTags(item.bodyHtml, item.title);
+      return acc;
+    }, {});
+  }, [entries]);
 
-  // Entries with actual written content are the ones that need (and get) a search index.
-  // Empty-body entries are excluded so they can never keep the progress stuck below 100%.
-  const indexableEntries = useMemo(
-    () =>
-      entries.filter(
-        (e) =>
-          e.bodyHtml
-            .replace(/<[^>]+>/g, "")
-            .replace(/&nbsp;/g, " ")
-            .trim().length > 0,
-      ),
-    [entries],
-  );
-  const indexedCount = useMemo(
-    () => indexableEntries.filter((e) => e.aiSearchIndex && e.aiSearchIndex.trim()).length,
-    [indexableEntries],
-  );
-  const totalIndexable = indexableEntries.length;
-  const allIndexed = totalIndexable > 0 && indexedCount >= totalIndexable;
+  useEffect(() => {
+    if (entries.length === 0) {
+      setAITagsByEntryId({});
+      return;
+    }
 
-  // Manual tag cloud - aggregated from #tags across all entries
-  const globalTagCloud = useMemo(() => {
-    const map: Record<string, number> = {};
-    entries.forEach((e) => {
-      extractManualTags(e.bodyHtml, e.title).forEach((tag) => {
-        map[tag] = (map[tag] || 0) + 1;
+    let isCancelled = false;
+    const timer = window.setTimeout(async () => {
+      const recentEntries = entries.slice(-30);
+      const tagPairs = await Promise.all(
+        recentEntries.map(async (item) => {
+          try {
+            const tags = await generateAITopicTags({ title: item.title, bodyHtml: item.bodyHtml }, []);
+            return [item.id, tags] as const;
+          } catch {
+            return [item.id, [] as string[]] as const;
+          }
+        }),
+      );
+
+      if (isCancelled) return;
+      const nextTags = tagPairs.reduce<Record<string, string[]>>((acc, [entryId, tags]) => {
+        if (tags.length > 0) acc[entryId] = tags;
+        return acc;
+      }, {});
+      setAITagsByEntryId(nextTags);
+    }, 900);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [entries]);
+
+  const globalTopicCloud = useMemo(() => {
+    const frequencyMap: Record<string, number> = {};
+    entries.forEach((item) => {
+      const extracted = mergeTopicTags(aiTagsByEntryId[item.id] ?? [], localTagsByEntryId[item.id] ?? []);
+      extracted.forEach((t) => {
+        frequencyMap[t] = (frequencyMap[t] || 0) + 1;
       });
     });
-    return Object.entries(map)
+    return Object.entries(frequencyMap)
       .map(([text, count]) => ({ text, count }))
       .sort((a, b) => b.count - a.count);
-  }, [entries]);
+  }, [aiTagsByEntryId, entries, localTagsByEntryId]);
 
   const expandedTerms = useMemo(() => {
     const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (queries.length === 0) return [];
+    
     const terms = [...queries];
-    queries.forEach((q) => {
-      if (SEMANTIC_DICTIONARY[q]) terms.push(...SEMANTIC_DICTIONARY[q]);
+    queries.forEach(q => {
+      if (SEMANTIC_DICTIONARY[q]) {
+        terms.push(...SEMANTIC_DICTIONARY[q]);
+      }
       Object.entries(SEMANTIC_DICTIONARY).forEach(([key, synonyms]) => {
-        if (synonyms.includes(q) && !terms.includes(key)) terms.push(key);
+        if (synonyms.includes(q) && !terms.includes(key)) {
+          terms.push(key);
+        }
       });
     });
     return Array.from(new Set(terms));
   }, [searchQuery]);
 
   const filteredEntries = useMemo(() => {
-    return entries
-      .filter((item) => {
-        const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
-        const titleClean = item.title.toLowerCase();
-        const dateString = item.date;
-        if (activeTag) {
-          const itemTags = extractManualTags(item.bodyHtml, item.title);
-          if (!itemTags.includes(activeTag)) return false;
-        }
-        if (expandedTerms.length > 0) {
-          return expandedTerms.some(
-            (term) => bodyClean.includes(term) || titleClean.includes(term) || dateString.includes(term),
-          );
-        }
-        return true;
-      })
-      .sort((a, b) => b.date.localeCompare(a.date));
-  }, [entries, expandedTerms, activeTag]);
+    return entries.filter((item) => {
+      const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
+      const titleClean = item.title.toLowerCase();
+      const dateString = item.date;
+
+      if (activeTag) {
+        const itemTags = mergeTopicTags(aiTagsByEntryId[item.id] ?? [], localTagsByEntryId[item.id] ?? []);
+        if (!itemTags.includes(activeTag)) return false;
+      }
+
+      if (expandedTerms.length > 0) {
+        return expandedTerms.some(
+          (term) =>
+            bodyClean.includes(term) ||
+            titleClean.includes(term) ||
+            dateString.includes(term)
+        );
+      }
+      return true;
+    }).sort((a, b) => b.date.localeCompare(a.date));
+  }, [activeTag, aiTagsByEntryId, entries, expandedTerms, localTagsByEntryId]);
 
   const emotionalDistribution = useMemo(() => {
-    const tallies: Record<MoodId, number> = {
-      happy: 0,
-      depressed: 0,
-      sleepy: 0,
-      angry: 0,
-      romantic: 0,
-      crazy: 0,
-      meh: 0,
-    };
+    const tallies = createMoodTallies();
     entries.forEach((e) => {
       if (tallies[e.mood] !== undefined) tallies[e.mood]++;
     });
@@ -2607,102 +1954,105 @@ function AIIntelligenceView({
   }, [entries]);
 
   const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
+  const indexProgressPercent = indexingState.total > 0 ? Math.round((indexingState.indexed / indexingState.total) * 100) : 100;
 
+  // EXECUTION FUNCTION: Sends search query + journal history directly to the Llama 3 processor
   async function handleAISubmit(e: FormEvent) {
     e.preventDefault();
     if (!searchQuery.trim()) return;
 
-    // Debounce: ignore rapid resubmits within 1s
-    const now = Date.now();
-    if (now - lastSearchAtRef.current < SEARCH_DEBOUNCE_MS) {
-      setAiAnswer("Please wait a moment before searching again...");
-      return;
-    }
-    lastSearchAtRef.current = now;
-
-    if (isSearchingAI) return; // lock - prevents queue collision
     setIsSearchingAI(true);
-    setSearchError(null);
     setAiAnswer("Thinking through your timeline memory...");
-
     try {
       const response = await smartAISearch(searchQuery, entries);
-      if (!response || response.trim().length === 0) {
-        setAiAnswer("I couldn't pull up a clear answer for that query. Try rephrasing with a keyword or a date hint.");
-        setSearchError("Empty response from the AI.");
-      } else {
-        setAiAnswer(response);
-      }
+      setAiAnswer(response);
     } catch (err) {
-      setAiAnswer("AI is busy or temporarily unavailable. Please wait a few seconds and try again.");
-      setSearchError(getErrorMessage(err));
+      setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
     } finally {
       setIsSearchingAI(false);
     }
   }
 
   return (
-    <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
-      <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
+      <div className="rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
+        
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Vault Search & Deep Analytics
-            </h1>
-            <IndexingStatusPill
-              active={indexingActive}
-              indexedCount={indexedCount}
-              total={totalIndexable}
-              allIndexed={allIndexed}
-              progress={indexingProgress}
-              onRetry={onRetryIndexing}
-            />
-          </div>
+          <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
           <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong>{" "}
-            button to prompt Llama to traverse dates and language gaps natively. Dates in AI responses are clickable!
+            Type natural questions or timeline queries. Hit the **Ask AI Brain** button to prompt Llama 3 to traverse dates and language gaps natively. Dates in AI responses are clickable!
           </p>
         </div>
-        <form
-          onSubmit={handleAISubmit}
-          className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition"
+
+        <div
+          className={cn(
+            "rounded-2xl border p-4 transition",
+            indexingState.failed > 0
+              ? "border-amber-400/30 bg-amber-500/10"
+              : indexingState.isIndexing || indexingState.pending > 0
+                ? "border-cyan-400/25 bg-cyan-500/10"
+                : "border-emerald-400/25 bg-emerald-500/10",
+          )}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-slate-400 shrink-0"
-            aria-hidden="true"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" />
-          </svg>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className={cn(
+                  "h-3 w-3 rounded-full shrink-0",
+                  indexingState.failed > 0
+                    ? "bg-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.65)]"
+                    : indexingState.isIndexing || indexingState.pending > 0
+                      ? "bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.55)] animate-pulse"
+                      : "bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.55)]",
+                )}
+              />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-white">
+                  Memory index: {indexingState.indexed}/{indexingState.total} indexed
+                </p>
+                <p className="text-xs text-slate-400">
+                  {indexingState.message}
+                </p>
+              </div>
+            </div>
+            {indexingState.failed > 0 ? (
+              <button
+                type="button"
+                onClick={onRetryIndexing}
+                disabled={indexingState.isIndexing}
+                className="round-button w-fit border-amber-300/30 bg-amber-400/10 text-amber-100 hover:border-amber-200/50"
+              >
+                Retry failed
+              </button>
+            ) : null}
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full border border-white/10 bg-black/40">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all duration-500",
+                indexingState.failed > 0 ? "bg-amber-400" : "bg-cyan-300",
+              )}
+              style={{ width: `${indexProgressPercent}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Input box form element overlay wrapper */}
+        <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
+          <span className="text-xl text-slate-500">🔍</span>
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder='Try asking "When did I go to the beach?" or "entries mentioning Alex"...'
-            className="min-w-0 w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
+            className="w-full bg-transparent outline-none border-none text-slate-100 placeholder:text-slate-600 text-base pr-2"
           />
-          {searchQuery ? (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery("");
-                setAiAnswer("");
-                setSearchError(null);
-              }}
-              className="text-xs text-slate-500 hover:text-white px-1"
-            >
+          {searchQuery && (
+            <button type="button" onClick={() => { setSearchQuery(""); setAiAnswer(""); }} className="text-xs text-slate-500 hover:text-white px-1">
               Clear
             </button>
-          ) : null}
+          )}
           <button
             type="submit"
             disabled={isSearchingAI || !searchQuery.trim()}
@@ -2711,7 +2061,9 @@ function AIIntelligenceView({
             {isSearchingAI ? "Thinking..." : "Ask AI Brain"}
           </button>
         </form>
-        {expandedTerms.length > 0 ? (
+
+        {/* Dynamic expansion status indicators */}
+        {expandedTerms.length > 0 && (
           <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
             <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
             {expandedTerms.map((t) => (
@@ -2720,46 +2072,38 @@ function AIIntelligenceView({
               </span>
             ))}
           </div>
-        ) : null}
-        {activeTag ? (
+        )}
+
+        {/* Selected tag constraint badge overlay */}
+        {activeTag && (
           <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
-            <span>
-              Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong>
-            </span>
-            <button
-              type="button"
-              onClick={() => setActiveTag(null)}
-              className="text-xs uppercase tracking-wider underline hover:text-white"
-            >
+            <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
+            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
               Remove Filter
             </button>
           </div>
-        ) : null}
-        {aiAnswer ? (
+        )}
+
+        {/* REASONED AI RESPONSE BLOCK: Renders summary card with CLICKABLE DATES */}
+        {aiAnswer && (
           <div className="p-5 rounded-2xl border border-fuchsia-500/20 bg-gradient-to-br from-cyan-950/30 to-fuchsia-950/30 shadow-xl backdrop-blur-xl animate-fade-in">
             <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2 flex items-center gap-2">
               <span>AI Cognitive Brain Conclusion</span>
               <span className="text-cyan-400/50 text-[10px]">(Click any date to jump to that entry)</span>
             </h4>
             <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-              <AIResponseRenderer
-                text={aiAnswer}
-                onDateClick={onJumpToEntry}
-                allowedDates={new Set(entries.map((e) => e.date))}
-              />
+              <AIResponseRenderer text={aiAnswer} onDateClick={onJumpToEntry} />
             </p>
-            {searchError ? (
-              <p className="mt-3 text-[10px] uppercase tracking-widest text-amber-300/80">{searchError}</p>
-            ) : null}
           </div>
-        ) : null}
+        )}
+
+        {/* Filter Output List Area */}
         <div className="space-y-3">
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
-            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">
-              Matched Entries Output ({filteredEntries.length})
-            </h3>
+            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
             <span className="text-xs text-slate-600">Click entry row to jump instantly to document layout editor</span>
           </div>
+
           {filteredEntries.length > 0 ? (
             <div className="space-y-2.5 max-h-[32rem] overflow-y-auto pr-1">
               {filteredEntries.map((item) => {
@@ -2780,14 +2124,16 @@ function AIIntelligenceView({
                           {item.title}
                         </h4>
                       </div>
-                      <p className="text-xs text-slate-400 truncate max-w-xl">{htmlToText(item.bodyHtml)}</p>
+                      <p className="text-xs text-slate-400 truncate max-w-xl">
+                        {htmlToText(item.bodyHtml)}
+                      </p>
                     </div>
+                    
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-slate-500 hidden sm:inline">{item.aiAssessment || ""}</span>
-                      <span
-                        className="h-3 w-3 rounded-full"
-                        style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }}
-                      />
+                      <span className="text-xs text-slate-500 hidden sm:inline">
+                        {detectSentimentLabel(item.bodyHtml)}
+                      </span>
+                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
                     </div>
                   </button>
                 );
@@ -2795,53 +2141,58 @@ function AIIntelligenceView({
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
-              No entries found matching the given parameters. Try revising your text query strings or toggle active
-              filter tags.
+              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
             </div>
           )}
         </div>
       </div>
-      <aside className="min-w-0 space-y-4 animate-float-in">
+
+      <aside className="space-y-4 animate-float-in">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood Graph (Pie)</p>
-            <span className="text-[10px] text-slate-500">{entries.length} entries</span>
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood & Emotional Trends</p>
           </div>
-          <div className="pt-2 flex items-start gap-4">
-            <MoodPieChart moods={MOODS} distribution={emotionalDistribution} />
-            <div className="flex-1 space-y-2">
-              {MOODS.map((m) => {
-                const count = emotionalDistribution[m.id] || 0;
-                const pct = entries.length ? (count / entries.length) * 100 : 0;
-                return (
-                  <div key={m.id} className="flex items-center justify-between text-xs">
-                    <span className="text-white font-medium flex items-center gap-2">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: m.color, boxShadow: `0 0 12px ${m.glow}` }}
-                      />
+
+          <MoodTrendGraph entries={entries} />
+
+          <div className="space-y-3 pt-2">
+            {MOODS.map((m) => {
+              const count = emotionalDistribution[m.id] || 0;
+              const normalizedPct = (count / maxDistributionCount) * 100;
+              return (
+                <div key={m.id} className="space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-white font-medium flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
                       {m.label}
                     </span>
-                    <span className="text-slate-500">
-                      {count} ({pct.toFixed(0)}%)
-                    </span>
+                    <span className="text-slate-500">{count} {count === 1 ? 'entry' : 'entries'}</span>
                   </div>
-                );
-              })}
-            </div>
+                  <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${normalizedPct}%`,
+                        backgroundColor: m.color,
+                        boxShadow: `0 0 10px ${m.glow}`,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
+
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Your Tag Cloud</p>
-            <p className="text-xs text-slate-400 mt-1">
-              Tags you added with <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entries. Click a
-              tag to filter results to entries that contain it.
-            </p>
+            <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Automatic Topic Cloud</p>
+            <p className="text-xs text-slate-400 mt-1">Click a generated keyword bubble to lock filters to that specific cluster category theme.</p>
           </div>
-          {globalTagCloud.length > 0 ? (
+
+          {globalTopicCloud.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 pt-2">
-              {globalTagCloud.map((tag) => (
+              {globalTopicCloud.map((tag) => (
                 <button
                   key={tag.text}
                   type="button"
@@ -2850,7 +2201,7 @@ function AIIntelligenceView({
                     "text-xs px-2.5 py-1 rounded-xl border transition duration-150",
                     activeTag === tag.text
                       ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200 shadow"
-                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5",
+                      : "bg-black/30 border-white/10 text-slate-300 hover:border-cyan-400/40 hover:bg-white/5"
                   )}
                 >
                   #{tag.text} <span className="text-[10px] opacity-40 ml-0.5">({tag.count})</span>
@@ -2858,262 +2209,85 @@ function AIIntelligenceView({
               ))}
             </div>
           ) : (
-            <p className="text-xs text-slate-500 italic">
-              No tags yet. Add <code className="px-1 py-0.5 rounded bg-white/10">#yourtag</code> in any entry and
-              they'll appear here.
-            </p>
+            <p className="text-xs text-slate-500 italic">Insufficient terminology mapped in entries to render cloud profiles yet.</p>
           )}
         </section>
+
         <MoodLegend />
       </aside>
     </div>
   );
 }
 
-/* ==========================================================================
- MONTH + YEAR SCROLL-WHEEL PICKER MODAL
+function MoodTrendGraph({ entries }: { entries: DiaryEntry[] }) {
+  const sortedEntries = useMemo(() => {
+    return [...entries]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-18);
+  }, [entries]);
 
- Smooth fade-in backdrop, two iOS-style scrollable wheels (month + year),
- snap-to-center selection, with Prev / Today / Next preserved on the
- HomeView behind it. Date selection still happens via the calendar grid.
- ========================================================================== */
-function MonthYearPicker({
-  month,
-  year,
-  onConfirm,
-  onCancel,
-}: {
-  month: number; // 0..11
-  year: number;
-  onConfirm: (month: number, year: number) => void;
-  onCancel: () => void;
-}) {
-  const [tempMonth, setTempMonth] = useState(month);
-  const [tempYear, setTempYear] = useState(year);
+  if (sortedEntries.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-6 text-center text-xs text-slate-500">
+        Mood graph appears after your first saved entry.
+      </div>
+    );
+  }
 
-  const currentYear = new Date().getFullYear();
-  const yearOptions = useMemo(() => {
-    const start = Math.min(1990, year) - 5;
-    const end = Math.max(currentYear + 50, year) + 5;
-    const out: number[] = [];
-    for (let y = start; y <= end; y++) out.push(y);
-    return out;
-  }, [year, currentYear]);
-
-  // Close on Esc
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
-      if (e.key === "Enter") onConfirm(tempMonth, tempYear);
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onCancel, onConfirm, tempMonth, tempYear]);
+  const width = 320;
+  const height = 150;
+  const paddingX = 18;
+  const paddingY = 18;
+  const moodIndexById = MOODS.reduce<Record<MoodId, number>>((acc, mood, index) => {
+    acc[mood.id] = index;
+    return acc;
+  }, {} as Record<MoodId, number>);
+  const maxMoodIndex = Math.max(MOODS.length - 1, 1);
+  const points = sortedEntries.map((entry, index) => {
+    const x = sortedEntries.length === 1
+      ? width / 2
+      : paddingX + (index / (sortedEntries.length - 1)) * (width - paddingX * 2);
+    const moodIndex = moodIndexById[entry.mood] ?? 0;
+    const y = paddingY + (moodIndex / maxMoodIndex) * (height - paddingY * 2);
+    return { x, y, entry, mood: MOOD_BY_ID[entry.mood] };
+  });
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in"
-      onClick={onCancel}
-    >
-      <div
-        className="relative w-[min(92vw,30rem)] rounded-[2rem] border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-float-in"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.4em] text-cyan-200/60">Jump to</p>
-            <h2 className="mt-1 text-2xl font-semibold text-white">Pick month & year</h2>
-          </div>
-          <button type="button" onClick={onCancel} className="round-button !px-3 !py-2" aria-label="Close picker">
-            âœ•
-          </button>
-        </div>
-        <div className="mt-6 flex gap-4 justify-center">
-          <ScrollWheel label="Month" items={MONTH_NAMES} valueIndex={tempMonth} onChange={(idx) => setTempMonth(idx)} />
-          <ScrollWheel
-            label="Year"
-            items={yearOptions.map((y) => String(y))}
-            valueIndex={yearOptions.indexOf(tempYear)}
-            onChange={(idx) => setTempYear(yearOptions[idx])}
+    <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-40 w-full overflow-visible" role="img" aria-label="Mood graph">
+        {[0, 1, 2, 3].map((line) => (
+          <line
+            key={line}
+            x1={paddingX}
+            x2={width - paddingX}
+            y1={paddingY + (line / 3) * (height - paddingY * 2)}
+            y2={paddingY + (line / 3) * (height - paddingY * 2)}
+            stroke="rgba(255,255,255,0.06)"
+            strokeWidth="1"
           />
-        </div>
-        <div className="mt-6 flex items-center justify-between gap-3">
-          <p className="text-xs text-slate-500">
-            Tap a value to jump, scroll for more. Calendar grid below picks the day.
-          </p>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={onCancel} className="nav-button px-4 py-2.5">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => onConfirm(tempMonth, tempYear)}
-              className="nav-button-primary px-5 py-2.5"
-            >
-              Go to {MONTH_SHORT[tempMonth]} {tempYear}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const SCROLL_WHEEL_ITEM_HEIGHT = 44;
-const SCROLL_WHEEL_VISIBLE = 5;
-
-function ScrollWheel({
-  label,
-  items,
-  valueIndex,
-  onChange,
-}: {
-  label: string;
-  items: string[];
-  valueIndex: number;
-  onChange: (index: number) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const programmaticScrollRef = useRef(false);
-  const lastReportedIndexRef = useRef<number>(valueIndex);
-
-  // Initial & programmatic scroll to the currently selected value
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const target = Math.max(0, valueIndex) * SCROLL_WHEEL_ITEM_HEIGHT;
-    if (Math.abs(containerRef.current.scrollTop - target) > 1) {
-      programmaticScrollRef.current = true;
-      containerRef.current.scrollTo({ top: target, behavior: "smooth" });
-      window.setTimeout(() => {
-        programmaticScrollRef.current = false;
-      }, 400);
-    }
-  }, [valueIndex]);
-
-  // Snap-to-center detection while user scrolls
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    function handleScroll() {
-      if (!container) return;
-      if (programmaticScrollRef.current) return;
-      const raw = container.scrollTop / SCROLL_WHEEL_ITEM_HEIGHT;
-      const snapped = Math.round(raw);
-      if (snapped !== lastReportedIndexRef.current && snapped >= 0 && snapped < items.length) {
-        lastReportedIndexRef.current = snapped;
-        onChange(snapped);
-      }
-    }
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, [items.length, onChange]);
-
-  // Pad with empty items so the centered value is visually in the middle
-  const padCount = Math.floor(SCROLL_WHEEL_VISIBLE / 2);
-  const paddedItems = [...Array(padCount).fill(""), ...items, ...Array(padCount).fill("")];
-
-  return (
-    <div className="flex-1 min-w-0">
-      <p className="text-center text-[10px] uppercase tracking-[0.3em] text-cyan-200/60 mb-2">{label}</p>
-      <div
-        className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/40"
-        style={{ height: SCROLL_WHEEL_ITEM_HEIGHT * SCROLL_WHEEL_VISIBLE }}
-      >
-        {/* Top + bottom fade overlays */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-slate-950 to-transparent z-10" />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-slate-950 to-transparent z-10" />
-        {/* Highlighted selection band */}
-        <div
-          className="pointer-events-none absolute inset-x-2 z-0 rounded-xl border border-fuchsia-400/30 bg-fuchsia-500/10 shadow-[0_0_25px_rgba(217,70,239,0.25)]"
-          style={{
-            top: SCROLL_WHEEL_ITEM_HEIGHT * padCount,
-            height: SCROLL_WHEEL_ITEM_HEIGHT,
-          }}
-        />
-        <div
-          ref={containerRef}
-          className="relative z-[5] h-full overflow-y-auto px-2 py-0 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          style={{ scrollSnapType: "y mandatory" }}
-        >
-          {paddedItems.map((item, idx) => {
-            const realIndex = idx - padCount;
-            const isSelected = realIndex === valueIndex;
-            const isPlaceholder = item === "";
-            return (
-              <button
-                key={`${item}-${idx}`}
-                type="button"
-                disabled={isPlaceholder}
-                onClick={() => {
-                  if (isPlaceholder) return;
-                  onChange(realIndex);
-                }}
-                className={cn(
-                  "block w-full text-center transition-all duration-200 snap-center",
-                  isPlaceholder ? "cursor-default" : "cursor-pointer",
-                  isSelected
-                    ? "text-white text-lg font-semibold"
-                    : isPlaceholder
-                      ? ""
-                      : "text-slate-400 text-base hover:text-slate-200",
-                )}
-                style={{ height: SCROLL_WHEEL_ITEM_HEIGHT, lineHeight: `${SCROLL_WHEEL_ITEM_HEIGHT}px` }}
-              >
-                {isPlaceholder ? "\u00A0" : item}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ==========================================================================
- MOOD PIE CHART + LEGEND
- ========================================================================== */
-function MoodPieChart({ moods, distribution }: { moods: MoodOption[]; distribution: Record<MoodId, number> }) {
-  const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
-  const normalized = total || 1;
-  let cumulative = 0;
-  const radius = 44;
-  const stroke = 12;
-  return (
-    <div className="relative flex-shrink-0">
-      <div className="relative">
-        <svg width={120} height={120} viewBox="0 0 120 120" className="drop-shadow">
-          <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
-          {moods.map((m) => {
-            const value = distribution[m.id] || 0;
-            if (value === 0) return null; // âœ… no entries â†’ no dot
-            const fraction = value / normalized;
-            const dash = 2 * Math.PI * radius;
-            const seg = dash * fraction;
-            const offset = dash * (1 - cumulative);
-            cumulative += fraction;
-            return (
-              <circle
-                key={m.id}
-                cx="60"
-                cy="60"
-                r={radius}
-                stroke={m.color}
-                strokeWidth={stroke}
-                strokeLinecap="butt" // âœ… no round cap = no ghost dot
-                fill="none"
-                strokeDasharray={`${seg} ${dash - seg}`}
-                strokeDashoffset={offset}
-                transform="rotate(-90 60 60)"
-                style={{ filter: `drop-shadow(0 0 10px ${m.glow})` }}
-              />
-            );
-          })}
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center flex-col text-center">
-          <div className="text-[10px] uppercase tracking-widest text-cyan-100/50">mood mix</div>
-          <div className="text-lg font-semibold text-white">{total}</div>
-          <div className="text-[10px] text-slate-400">entries</div>
-        </div>
+        ))}
+        {points.length > 1 ? (
+          <path d={path} fill="none" stroke="rgba(34,211,238,0.72)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        ) : null}
+        {points.map((point) => (
+          <g key={point.entry.id}>
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r="5.5"
+              fill={point.mood.color}
+              stroke="rgba(255,255,255,0.65)"
+              strokeWidth="1"
+              style={{ filter: `drop-shadow(0 0 8px ${point.mood.glow})` }}
+            />
+            <title>{`${point.entry.date} - ${point.mood.label}`}</title>
+          </g>
+        ))}
+      </svg>
+      <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-slate-500">
+        <span>{sortedEntries[0]?.date}</span>
+        <span>{sortedEntries[sortedEntries.length - 1]?.date}</span>
       </div>
     </div>
   );
@@ -3126,10 +2300,7 @@ function MoodLegend() {
       <div className="mt-4 grid gap-3">
         {MOODS.map((mood) => (
           <div key={mood.id} className="flex items-center gap-3 text-sm text-slate-300">
-            <span
-              className="h-3 w-3 rounded-full"
-              style={{ backgroundColor: mood.color, boxShadow: `0 0 16px ${mood.glow}` }}
-            />
+            <span className="h-3 w-3 rounded-full" style={{ backgroundColor: mood.color, boxShadow: `0 0 16px ${mood.glow}` }} />
             <span className="font-medium text-white">{mood.label}</span>
             <span className="text-slate-500">{mood.description}</span>
           </div>
@@ -3143,10 +2314,7 @@ function MoodChip({ mood }: { mood: MoodId }) {
   const option = MOOD_BY_ID[mood];
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 py-2 text-sm text-slate-200">
-      <span
-        className="h-2.5 w-2.5 rounded-full"
-        style={{ backgroundColor: option.color, boxShadow: `0 0 16px ${option.glow}` }}
-      />
+      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: option.color, boxShadow: `0 0 16px ${option.glow}` }} />
       {option.label}
     </span>
   );
@@ -3186,60 +2354,6 @@ function AmbientBackdrop() {
   );
 }
 
-/* ==========================================================================
- DRAFT + ASSESSMENT CACHE HELPERS
- ========================================================================== */
-function saveDraft(draft: DraftEntry): void {
-  try {
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
-  } catch (e) {
-    console.warn("Failed to save draft to localStorage:", e);
-  }
-}
-
-function loadDraft(dateKey: string): DraftEntry | null {
-  try {
-    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
-    if (!raw) return null;
-    const draft = JSON.parse(raw) as DraftEntry;
-    return draft.dateKey === dateKey ? draft : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearDraft(dateKey: string): void {
-  try {
-    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
-    if (raw) {
-      const draft = JSON.parse(raw) as DraftEntry;
-      if (draft.dateKey === dateKey) {
-        localStorage.removeItem(DRAFT_STORAGE_KEY);
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-function loadAssessmentCache(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(ASSESSMENT_CACHE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, string>;
-  } catch {
-    return {};
-  }
-}
-
-function saveAssessmentCache(cache: Record<string, string>) {
-  try {
-    localStorage.setItem(ASSESSMENT_CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    /* ignore */
-  }
-}
-
 function createEmptyVault(): VaultData {
   return {
     version: 1,
@@ -3268,219 +2382,6 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
   };
 }
 
-/* ==========================================================================
- GOOGLE DRIVE BACKUP HELPERS
- ========================================================================== */
-function stripHtmlToText(html: string): string {
-  const withBreaks = html.replace(/<\/(p|div|li|h[1-6])>/gi, "\n").replace(/<br\s*\/?>/gi, "\n");
-  const withoutTags = withBreaks.replace(/<[^>]+>/g, "");
-  const decoded = withoutTags
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"');
-  return decoded
-    .split("\n")
-    .map((line) => line.trim())
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function buildDriveBackupText(vault: VaultData): string {
-  const lines: string[] = [];
-  lines.push("MOONLIT DIARY - FULL BACKUP");
-  lines.push(`Exported ${new Date().toLocaleString()}`);
-  lines.push(`${vault.entries.length} ${vault.entries.length === 1 ? "entry" : "entries"}`);
-  lines.push("=".repeat(60));
-  const sorted = [...vault.entries].sort((a, b) => a.date.localeCompare(b.date));
-  for (const entry of sorted) {
-    lines.push("");
-    lines.push(`Date: ${entry.date}`);
-    lines.push(`Title: ${entry.title || "(untitled)"}`);
-    lines.push(`Mood: ${entry.mood}`);
-    if (entry.dailyWin) lines.push(`Daily win: ${entry.dailyWin}`);
-    if (entry.attachments?.length) {
-      lines.push(`Attachments: ${entry.attachments.length} photo(s) - not included in this text backup, view in app`);
-    }
-    lines.push("-".repeat(40));
-    lines.push(stripHtmlToText(entry.bodyHtml) || "(no written content)");
-    lines.push("=".repeat(60));
-  }
-  return lines.join("\n");
-}
-
-async function findExistingDriveFileId(token: string): Promise<string | null> {
-  const cached = localStorage.getItem(DRIVE_FILE_ID_STORAGE_KEY);
-  if (cached) return cached;
-  const query = encodeURIComponent(`name='${DRIVE_BACKUP_FILE_NAME}' and trashed=false`);
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&spaces=drive&fields=files(id,name)`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`Drive search failed: ${res.status}`);
-  const data = (await res.json()) as { files?: { id: string }[] };
-  const fileId = data.files?.[0]?.id ?? null;
-  if (fileId) localStorage.setItem(DRIVE_FILE_ID_STORAGE_KEY, fileId);
-  return fileId;
-}
-
-async function createDriveBackupFile(token: string, text: string): Promise<string> {
-  const boundary = "moonlitdiaryboundary";
-  const metadata = { name: DRIVE_BACKUP_FILE_NAME, mimeType: "text/plain" };
-  const body =
-    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-    `--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${text}\r\n` +
-    `--${boundary}--`;
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
-    body,
-  });
-  if (!res.ok) throw new Error(`Drive create failed: ${res.status}`);
-  const data = (await res.json()) as { id: string };
-  localStorage.setItem(DRIVE_FILE_ID_STORAGE_KEY, data.id);
-  return data.id;
-}
-
-async function updateDriveBackupFile(token: string, fileId: string, text: string): Promise<void> {
-  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
-    method: "PATCH",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain; charset=UTF-8" },
-    body: text,
-  });
-  if (res.status === 404) {
-    localStorage.removeItem(DRIVE_FILE_ID_STORAGE_KEY);
-    throw new Error("DRIVE_FILE_MISSING");
-  }
-  if (!res.ok) throw new Error(`Drive update failed: ${res.status}`);
-}
-
-async function upsertDriveBackupFile(token: string, text: string): Promise<void> {
-  const existingId = await findExistingDriveFileId(token);
-  if (!existingId) {
-    await createDriveBackupFile(token, text);
-    return;
-  }
-  try {
-    await updateDriveBackupFile(token, existingId, text);
-  } catch (error) {
-    if ((error as Error).message === "DRIVE_FILE_MISSING") {
-      await createDriveBackupFile(token, text);
-      return;
-    }
-    throw error;
-  }
-}
-
-function DriveBackupPanel({
-  status,
-  error,
-  lastSynced,
-  configured,
-  onConnect,
-  onDisconnect,
-  onSyncNow,
-  onClose,
-}: {
-  status: DriveStatus;
-  error: string;
-  lastSynced: string | null;
-  configured: boolean;
-  onConnect: () => void;
-  onDisconnect: () => void;
-  onSyncNow: () => void;
-  onClose: () => void;
-}) {
-  const isConnected = status === "connected" || status === "synced" || status === "syncing";
-  return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in"
-      onClick={onClose}
-    >
-      <div
-        className="relative w-[min(92vw,28rem)] rounded-[2rem] border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-float-in"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.4em] text-cyan-200/60">Backup</p>
-            <h2 className="mt-1 text-2xl font-semibold text-white">Google Drive</h2>
-          </div>
-          <button type="button" onClick={onClose} className="round-button !px-3 !py-2" aria-label="Close">
-            âœ•
-          </button>
-        </div>
-
-        {!configured ? (
-          <p className="mt-5 text-sm text-amber-200/80">
-            Google Drive isn't set up for this deployment yet. Add a{" "}
-            <code className="rounded bg-white/10 px-1 py-0.5">VITE_GOOGLE_CLIENT_ID</code> secret and redeploy.
-          </p>
-        ) : (
-          <>
-            <p className="mt-5 text-sm text-slate-300/80">
-              When connected, a plain-text copy of every entry (decrypted, readable) is written to a file named{" "}
-              <span className="text-slate-100">"{DRIVE_BACKUP_FILE_NAME}"</span> in your Google Drive, updated every
-              time you save.
-            </p>
-            <div className="mt-5 flex items-center gap-2 text-sm">
-              <span
-                className={cn(
-                  "h-2 w-2 rounded-full",
-                  status === "synced" || status === "connected"
-                    ? "bg-emerald-400"
-                    : status === "syncing" || status === "connecting"
-                      ? "bg-amber-300 animate-pulse"
-                      : status === "error"
-                        ? "bg-rose-400"
-                        : "bg-white/30",
-                )}
-              />
-              <span className="text-slate-200">
-                {status === "disconnected" && "Not connected"}
-                {status === "connecting" && "Connectingâ€¦"}
-                {status === "connected" && "Connected - will back up on next save"}
-                {status === "syncing" && "Backing upâ€¦"}
-                {status === "synced" && "Backed up"}
-                {status === "error" && "Error"}
-              </span>
-            </div>
-            {lastSynced ? (
-              <p className="mt-1 text-xs text-slate-400">Last backed up {new Date(lastSynced).toLocaleString()}</p>
-            ) : null}
-            {error ? <p className="mt-2 text-sm text-rose-300/90">{error}</p> : null}
-            <div className="mt-6 flex gap-2">
-              {isConnected ? (
-                <>
-                  <button type="button" onClick={onSyncNow} className="nav-button-primary flex-1">
-                    Back up now
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onDisconnect}
-                    className="nav-button text-rose-300/80 hover:bg-rose-500/10"
-                  >
-                    Disconnect
-                  </button>
-                </>
-              ) : (
-                <button type="button" onClick={onConnect} className="nav-button-primary flex-1">
-                  Connect Google Drive
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ==========================================================================
- CRYPTO + GITHUB HELPERS
- ========================================================================== */
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -3500,6 +2401,7 @@ async function encryptVault(vault: VaultData, passphrase: string): Promise<strin
     },
     payload: bytesToBase64(new Uint8Array(encrypted)),
   };
+
   return JSON.stringify(file, null, 2);
 }
 
@@ -3509,6 +2411,7 @@ async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: s
     const iv = base64ToBytes(file.crypto.iv);
     const encrypted = base64ToBytes(file.payload);
     const key = await deriveVaultKey(passphrase, salt, file.crypto.iterations);
+
     try {
       const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
       return normalizeVault(JSON.parse(new TextDecoder().decode(decrypted)) as VaultData);
@@ -3516,6 +2419,7 @@ async function openVaultFile(file: EncryptedVaultFile | VaultData, passphrase: s
       throw new Error("Could not unlock the vault. Check your passphrase.");
     }
   }
+
   return normalizeVault(file);
 }
 
@@ -3527,14 +2431,65 @@ function normalizeVault(vault: VaultData): VaultData {
   return {
     version: 1,
     updatedAt: vault.updatedAt || new Date().toISOString(),
-    entries: Array.isArray(vault.entries) ? vault.entries : [],
+    entries: Array.isArray(vault.entries) ? vault.entries.map(normalizeDiaryEntry) : [],
   };
 }
 
+function normalizeDiaryEntry(entry: DiaryEntry): DiaryEntry {
+  const hasCurrentIndex = hasCurrentSearchIndex(entry);
+  const failedWithoutCurrentIndex = !hasCurrentIndex && entry.aiSearchIndexStatus === "failed";
+
+  return {
+    ...entry,
+    aiSearchIndex: hasCurrentIndex ? entry.aiSearchIndex ?? null : null,
+    aiSearchIndexStatus: hasCurrentIndex ? "indexed" : failedWithoutCurrentIndex ? "failed" : "pending",
+    aiSearchIndexError: failedWithoutCurrentIndex ? entry.aiSearchIndexError : undefined,
+  };
+}
+
+function createSearchIndexingState(entries: DiaryEntry[]): SearchIndexingState {
+  const total = entries.length;
+  const indexed = entries.filter(hasCurrentSearchIndex).length;
+  const failed = entries.filter((entry) => needsSearchIndex(entry) && entry.aiSearchIndexStatus === "failed").length;
+  const pending = Math.max(total - indexed - failed, 0);
+
+  return {
+    isIndexing: false,
+    indexed,
+    pending,
+    failed,
+    total,
+    message: failed > 0 ? `${failed} ${failed === 1 ? "entry needs" : "entries need"} retry` : pending > 0 ? `${pending} ${pending === 1 ? "entry" : "entries"} waiting to index` : "All entries indexed",
+  };
+}
+
+function needsSearchIndex(entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin" | "aiSearchIndex">) {
+  return !hasCurrentSearchIndex(entry);
+}
+
+function hasCurrentSearchIndex(entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin" | "aiSearchIndex">) {
+  return Boolean(entry.aiSearchIndex && entry.aiSearchIndex.contentHash === createSearchIndexContentHash(entry));
+}
+
+function createSearchIndexContentHash(entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml"> & { dailyWin?: string }) {
+  const source = JSON.stringify({
+    date: entry.date,
+    title: entry.title,
+    body: htmlToText(entry.bodyHtml),
+    dailyWin: entry.dailyWin ?? "",
+  });
+
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: number) {
-  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey",
-  ]);
+  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
   const saltBuffer = new Uint8Array(salt).buffer as ArrayBuffer;
   return crypto.subtle.deriveKey(
     { name: "PBKDF2", salt: saltBuffer, iterations, hash: "SHA-256" },
@@ -3545,29 +2500,32 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: 
   );
 }
 
-async function fetchGitHubVaultFile(
-  config: GitHubConfig,
-): Promise<{ exists: boolean; sha: string | null; text: string }> {
-  const response = await fetch(gitHubContentUrl(config), { headers: githubHeaders(config), cache: "no-store" });
-  if (response.status === 404) return { exists: false, sha: null, text: "" };
-  if (!response.ok) throw new Error(await githubErrorMessage(response));
+async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
+  const response = await fetch(gitHubContentUrl(config), {
+    headers: githubHeaders(config),
+  });
+
+  if (response.status === 404) {
+    return { exists: false, sha: null, text: "" };
+  }
+
+  if (!response.ok) {
+    throw new Error(await githubErrorMessage(response));
+  }
+
   const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
   if (data.content && data.encoding === "base64") {
     return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   }
-  if (data.sha) {
-    // File is over the 1MB inline-content limit. Don't follow download_url to
-    // raw.githubusercontent.com - that domain doesn't support CORS with an
-    // Authorization header, so the browser's preflight fails. Instead, re-request
-    // the same api.github.com endpoint using the raw media type, which does
-    // support CORS with our auth header.
-    const rawResponse = await fetch(gitHubContentUrl(config), {
-      headers: { ...githubHeaders(config), Accept: "application/vnd.github.raw+json" },
-      cache: "no-store",
-    });
-    if (!rawResponse.ok) throw new Error(await githubErrorMessage(rawResponse));
-    return { exists: true, sha: data.sha, text: await rawResponse.text() };
+
+  if (data.download_url) {
+    const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
+    if (!rawResponse.ok) {
+      throw new Error(await githubErrorMessage(rawResponse));
+    }
+    return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
   }
+
   return { exists: true, sha: data.sha ?? null, text: "" };
 }
 
@@ -3582,13 +2540,21 @@ async function putGitHubVaultFile(
     content: stringToBase64(text),
     branch: config.branch,
   };
-  if (sha) body.sha = sha;
+
+  if (sha) {
+    body.sha = sha;
+  }
+
   const response = await fetch(gitHubContentUrl(config), {
     method: "PUT",
     headers: githubHeaders(config),
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(await githubErrorMessage(response));
+
+  if (!response.ok) {
+    throw new Error(await githubErrorMessage(response));
+  }
+
   const data = (await response.json()) as { content?: { sha?: string } };
   return { sha: data.content?.sha ?? null };
 }
@@ -3643,9 +2609,6 @@ function base64ToBytes(value: string) {
   return bytes;
 }
 
-/* ==========================================================================
- DATE + TAG HELPERS
- ========================================================================== */
 function dateToKey(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -3658,14 +2621,146 @@ function keyToDate(key: string) {
   return new Date(year, month - 1, day);
 }
 
+const TOPIC_RULES: Record<string, readonly string[]> = {
+  relationship: ["friend", "bestie", "buddy", "partner", "date", "crush", "relationship", "together", "missed", "texted", "call", "chat", "alex"],
+  family: ["family", "home", "mom", "mother", "dad", "father", "parents", "sister", "brother", "ghar", "mummy", "papa"],
+  study: ["study", "class", "college", "school", "exam", "assignment", "lecture", "notes", "clg", "padhai", "teacher"],
+  work: ["work", "office", "meeting", "boss", "client", "deadline", "task", "shift", "presentation", "job"],
+  coding: ["coding", "code", "app", "bug", "feature", "deploy", "github", "react", "typescript", "project", "debug"],
+  goals: ["goal", "plan", "routine", "habit", "discipline", "progress", "improve", "growth", "future", "target"],
+  fitness: ["gym", "workout", "run", "running", "walk", "training", "exercise", "lift", "fitness", "health"],
+  health: ["sick", "fever", "pain", "doctor", "medicine", "headache", "therapy", "health", "body", "recover"],
+  sleep: ["sleep", "sleepy", "nap", "tired", "exhausted", "late night", "insomnia", "bed", "rest"],
+  food: ["food", "coffee", "chai", "dinner", "lunch", "breakfast", "restaurant", "snack", "ate", "cook"],
+  travel: ["travel", "trip", "drive", "train", "flight", "bus", "city", "visited", "vacation", "journey"],
+  beach: ["beach", "ocean", "sea", "waves", "sand", "coast", "shore", "samundar", "pani", "island"],
+  money: ["money", "budget", "spent", "salary", "bill", "shopping", "buy", "payment", "expensive"],
+  creativity: ["write", "writing", "music", "song", "photo", "art", "design", "drawing", "creative", "idea"],
+  gaming: ["game", "gaming", "match", "rank", "level", "played", "console", "valorant", "minecraft"],
+  conflict: ["fight", "argument", "angry", "annoyed", "hurt", "ignored", "toxic", "drama", "ladai"],
+  anxiety: ["stress", "stressed", "anxious", "worry", "overthink", "panic", "pressure", "darr", "tension"],
+  gratitude: ["grateful", "thankful", "blessed", "appreciate", "proud", "win", "achievement"],
+  love: ["love", "romantic", "cute", "heart", "kiss", "hug", "pyaar", "yaad", "miss"],
+  chaos: ["crazy", "wild", "random", "chaos", "mess", "unhinged", "impulsive", "crazyy"],
+};
+
+const STOPWORDS = new Set([
+  "about", "after", "again", "also", "because", "before", "being", "could", "didnt", "doesnt", "entry", "every",
+  "feel", "felt", "from", "have", "just", "like", "really", "still", "that", "their", "there", "they", "this",
+  "today", "tomorrow", "very", "want", "went", "were", "what", "when", "with", "would", "your", "mera", "meri",
+  "maine", "mujhe", "nahi", "tha", "thi", "hai", "aur", "but", "the", "and", "for", "you",
+]);
+
+const EMOTION_RULES: Record<string, readonly string[]> = {
+  "Joyful / Excited": ["happy", "joy", "excited", "awesome", "amazing", "great", "fun", "laugh", "smile", "thrilled", "mast"],
+  "Grateful / Proud": ["grateful", "thankful", "blessed", "proud", "win", "achieved", "progress", "relieved"],
+  "Calm / Peaceful": ["calm", "peace", "peaceful", "soft", "quiet", "stable", "relaxed", "easy"],
+  "Romantic / Attached": ["love", "romantic", "crush", "date", "cute", "heart", "hug", "kiss", "pyaar", "miss"],
+  "Anxious / Worried": ["anxious", "worry", "worried", "overthink", "panic", "stress", "stressed", "pressure", "tension", "darr"],
+  "Sad / Low": ["sad", "depressed", "empty", "cry", "cried", "lonely", "alone", "hopeless", "hurt", "down"],
+  "Angry / Irritated": ["angry", "mad", "furious", "irritated", "annoyed", "fight", "argument", "hate", "ladai"],
+  "Tired / Drained": ["tired", "sleepy", "exhausted", "drained", "burnout", "burnt", "nap", "sleep", "fatigue"],
+  "Confused / Unsure": ["confused", "unsure", "lost", "unclear", "doubt", "idk", "maybe", "mixed", "stuck"],
+  "Chaotic / Hyper": ["crazy", "wild", "chaos", "random", "restless", "impulsive", "hyper", "unhinged", "crazyy"],
+  "Guilty / Regretful": ["guilt", "guilty", "regret", "sorry", "mistake", "ashamed", "shouldn't", "shouldnt"],
+};
+
+function normalizeTag(tag: string) {
+  return tag
+    .toLowerCase()
+    .replace(/^#/, "")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 28);
+}
+
+function mergeTopicTags(...tagGroups: string[][]) {
+  const merged = new Set<string>();
+  tagGroups.flat().forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (normalized && !STOPWORDS.has(normalized)) merged.add(normalized);
+  });
+  return Array.from(merged);
+}
+
+function createMoodTallies(): Record<MoodId, number> {
+  return MOODS.reduce((acc, mood) => {
+    acc[mood.id] = 0;
+    return acc;
+  }, {} as Record<MoodId, number>);
+}
+
+function countTermHits(text: string, terms: readonly string[]) {
+  return terms.reduce((score, term) => {
+    const normalizedTerm = term.toLowerCase();
+    if (normalizedTerm.includes(" ")) {
+      return score + (text.includes(normalizedTerm) ? 2 : 0);
+    }
+    const matcher = new RegExp(`\\b${normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    return score + (text.match(matcher)?.length ?? 0);
+  }, 0);
+}
+
+function extractTopicsAndTags(html: string, title: string): string[] {
+  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
+  const foundTags = new Set<string>();
+
+  const hashMatches = combinedText.match(/#[a-z0-9_-]+/g);
+  if (hashMatches) {
+    hashMatches.forEach((match) => {
+      const normalized = normalizeTag(match);
+      if (normalized) foundTags.add(normalized);
+    });
+  }
+
+  Object.entries(TOPIC_RULES).forEach(([tag, terms]) => {
+    if (countTermHits(combinedText, terms) > 0) foundTags.add(tag);
+  });
+
+  const titleKeywords = title
+    .toLowerCase()
+    .match(/[a-z][a-z0-9-]{3,}/g)
+    ?.filter((word) => !STOPWORDS.has(word))
+    .slice(0, 2) ?? [];
+  titleKeywords.forEach((word) => foundTags.add(normalizeTag(word)));
+
+  const rankedWords = new Map<string, number>();
+  combinedText.match(/[a-z][a-z0-9-]{3,}/g)?.forEach((word) => {
+    if (STOPWORDS.has(word) || Object.keys(TOPIC_RULES).includes(word)) return;
+    rankedWords.set(word, (rankedWords.get(word) ?? 0) + 1);
+  });
+
+  [...rankedWords.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(0, 6 - foundTags.size))
+    .forEach(([word]) => foundTags.add(normalizeTag(word)));
+
+  return Array.from(foundTags).slice(0, 8);
+}
+
+function detectSentimentLabel(html: string): string {
+  const plainText = htmlToText(html).toLowerCase();
+  if (!plainText || plainText.length < 5) return "Neutral / Unclear";
+
+  const scoredEmotions = Object.entries(EMOTION_RULES)
+    .map(([label, terms]) => ({ label, score: countTermHits(plainText, terms) }))
+    .filter((emotion) => emotion.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scoredEmotions.length === 0) return "Balanced / Processing";
+  if (scoredEmotions.length > 1 && scoredEmotions[0].score === scoredEmotions[1].score) {
+    return `Mixed: ${scoredEmotions[0].label.split(" / ")[0]} + ${scoredEmotions[1].label.split(" / ")[0]}`;
+  }
+  return scoredEmotions[0].label;
+}
+
 function addMonths(date: Date, amount: number) {
   return new Date(date.getFullYear(), date.getMonth() + amount, 1);
 }
 
 function formatDateLong(key: string) {
-  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(
-    keyToDate(key),
-  );
+  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(keyToDate(key));
 }
 
 function buildMonthCells(monthDate: Date) {
@@ -3673,6 +2768,7 @@ function buildMonthCells(monthDate: Date) {
   const month = monthDate.getMonth();
   const firstDay = new Date(year, month, 1);
   const gridStart = new Date(year, month, 1 - firstDay.getDay());
+
   return Array.from({ length: 42 }, (_, index) => {
     const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
     return {
@@ -3703,28 +2799,14 @@ function sanitizeHtml(html: string) {
   const template = document.createElement("template");
   template.innerHTML = html;
   template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
-  const allowedTags = new Set([
-    "A",
-    "B",
-    "BLOCKQUOTE",
-    "BR",
-    "DIV",
-    "EM",
-    "H1",
-    "H2",
-    "H3",
-    "I",
-    "LI",
-    "OL",
-    "P",
-    "SPAN",
-    "STRONG",
-    "U",
-    "UL",
-  ]);
+
+  const allowedTags = new Set(["A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "H1", "H2", "H3", "I", "LI", "OL", "P", "SPAN", "STRONG", "U", "UL"]);
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
   const elements: Element[] = [];
-  while (walker.nextNode()) elements.push(walker.currentNode as Element);
+  while (walker.nextNode()) {
+    elements.push(walker.currentNode as Element);
+  }
+
   elements.forEach((element) => {
     if (!allowedTags.has(element.tagName)) {
       const wrapper = document.createElement("span");
@@ -3732,6 +2814,7 @@ function sanitizeHtml(html: string) {
       element.replaceWith(...Array.from(wrapper.childNodes));
       return;
     }
+
     Array.from(element.attributes).forEach((attribute) => {
       const name = attribute.name.toLowerCase();
       const isSafeLinkAttribute = element.tagName === "A" && ["href", "target", "rel"].includes(name);
@@ -3739,79 +2822,15 @@ function sanitizeHtml(html: string) {
         element.removeAttribute(attribute.name);
       }
     });
+
     if (element.tagName === "A") {
       const href = element.getAttribute("href") ?? "";
-      if (href && !/^(https?:|mailto:|tel:|#)/i.test(href)) element.removeAttribute("href");
+      if (href && !/^(https?:|mailto:|tel:|#)/i.test(href)) {
+        element.removeAttribute("href");
+      }
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noreferrer");
     }
-  });
-  return template.innerHTML;
-}
-
-function sanitizeHtmlWithTagChips(html: string) {
-  const safeHtml = sanitizeHtml(html);
-  const template = document.createElement("template");
-  template.innerHTML = safeHtml;
-
-  const textNodes: Text[] = [];
-  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
-
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    const parent = node.parentElement;
-
-    // Don't modify links.
-    if (parent?.closest("a")) continue;
-
-    if (/#([\p{L}\p{N}_-]+)/u.test(node.nodeValue || "")) {
-      textNodes.push(node);
-    }
-  }
-
-  textNodes.forEach((node) => {
-    const text = node.nodeValue || "";
-    const regex = /#([\p{L}\p{N}_-]+)/gu;
-    const fragment = document.createDocumentFragment();
-
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-      }
-
-      const chip = document.createElement("span");
-      chip.textContent = match[0];
-      chip.setAttribute(
-        "style",
-        [
-          "display:inline-flex",
-          "align-items:center",
-          "vertical-align:baseline",
-          "margin:0 0.1rem",
-          "padding:0.08rem 0.45rem",
-          "border-radius:9999px",
-          "border:1px solid rgba(34,211,238,0.25)",
-          "background:rgba(6,182,212,0.10)",
-          "color:rgb(165,243,252)",
-          "font-size:0.86em",
-          "font-weight:600",
-          "line-height:1.45",
-          "box-shadow:0 0 14px rgba(34,211,238,0.10)",
-        ].join(";"),
-      );
-
-      fragment.appendChild(chip);
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < text.length) {
-      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-    }
-
-    node.replaceWith(fragment);
   });
 
   return template.innerHTML;
@@ -3832,7 +2851,12 @@ function formatBytes(bytes: number) {
 function filesToAttachments(files: FileList, onProgress?: (progress: string) => void): Promise<Attachment[]> {
   const fileArray = Array.from(files);
   const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
-  if (totalSize > 10 * 1024 * 1024 && onProgress) onProgress(`Loading ${fileArray.length} file(s)...`);
+  
+  // For large files, show progress
+  if (totalSize > 10 * 1024 * 1024 && onProgress) {
+    onProgress(`Loading ${fileArray.length} file(s)...`);
+  }
+  
   return Promise.all(
     fileArray.map(
       (file) =>
@@ -3841,10 +2865,14 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
             reject(new Error(`${file.name} exceeds the 500MB limit.`));
             return;
           }
+          
           const reader = new FileReader();
+          
+          // Show progress for individual large files
           if (file.size > 50 * 1024 * 1024 && onProgress) {
             onProgress(`Loading ${file.name} (${formatBytes(file.size)})...`);
           }
+          
           reader.onload = () => {
             resolve({
               id: createId(),
@@ -3862,27 +2890,6 @@ function filesToAttachments(files: FileList, onProgress?: (progress: string) => 
   );
 }
 
-/**
- * Extract every unique #hashtag found in the entry body / title.
- * Used both to populate the tag picker dropdown AND to render the tag chips.
- * Strips the leading `#`, lowercases, and de-duplicates.
- */
-function extractManualTags(html: string, title: string): string[] {
-  const plain = htmlToText(html);
-  const combined = `${title || ""} ${plain}`.toLowerCase();
-  if (!combined.trim()) return [];
-  const matches = combined.match(/#([\p{L}\p{N}_-]+)/gu) || [];
-  const set = new Set<string>();
-  matches.forEach((m) => {
-    const clean = m.replace(/^#/, "").trim();
-    if (clean) set.add(clean);
-  });
-  return Array.from(set).slice(0, 24);
-}
-
-/* ==========================================================================
- LIGHTBOX VIEWER
- ========================================================================== */
 function LightboxViewer({
   attachments,
   currentIndex,
@@ -3900,16 +2907,19 @@ function LightboxViewer({
   const touchStartX = useRef<number | null>(null);
   const touchEndX = useRef<number | null>(null);
 
+  // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
       if (e.key === "ArrowLeft") onPrev();
       if (e.key === "ArrowRight") onNext();
     }
+
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, onPrev, onNext]);
 
+  // Cleanup body scroll lock when unmounting
   useEffect(() => {
     document.body.style.overflow = "hidden";
     return () => {
@@ -3921,23 +2931,30 @@ function LightboxViewer({
     touchStartX.current = e.changedTouches[0].screenX;
     touchEndX.current = null;
   }
+
   function handleTouchMove(e: ReactTouchEvent) {
     touchEndX.current = e.changedTouches[0].screenX;
   }
+
   function handleTouchEnd() {
     if (!touchStartX.current || !touchEndX.current) return;
     const diff = touchStartX.current - touchEndX.current;
     const minSwipeDistance = 50;
+
     if (Math.abs(diff) > minSwipeDistance) {
-      if (diff > 0) onNext();
-      else onPrev();
+      if (diff > 0) {
+        // Swiped left -> next
+        onNext();
+      } else {
+        // Swiped right -> prev
+        onPrev();
+      }
     }
     touchStartX.current = null;
     touchEndX.current = null;
   }
 
   function downloadCurrent() {
-    if (!currentAttachment) return;
     const link = document.createElement("a");
     link.href = currentAttachment.dataUrl;
     link.download = currentAttachment.name;
@@ -3947,6 +2964,7 @@ function LightboxViewer({
   }
 
   if (!currentAttachment) return null;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-sm animate-fade-in"
@@ -3955,6 +2973,7 @@ function LightboxViewer({
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
+      {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
         <button
           type="button"
@@ -3964,9 +2983,10 @@ function LightboxViewer({
           }}
           className="flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-2 text-white transition backdrop-blur-md"
         >
-          <span className="text-lg leading-none">â†</span>
+          <span className="text-lg leading-none">←</span>
           <span className="text-sm font-medium">Back</span>
         </button>
+
         <div className="flex items-center gap-2">
           <span className="text-white/70 text-sm font-mono bg-black/40 px-3 py-1.5 rounded-full backdrop-blur-md">
             {currentIndex + 1} / {attachments.length}
@@ -3979,12 +2999,14 @@ function LightboxViewer({
             }}
             className="flex items-center gap-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 px-4 py-2 text-cyan-100 transition backdrop-blur-md"
           >
-            <span className="text-sm">â¬‡</span>
+            <span className="text-sm">⬇</span>
             <span className="text-sm font-medium">Download</span>
           </button>
         </div>
       </div>
-      {attachments.length > 1 ? (
+
+      {/* Navigation arrows */}
+      {attachments.length > 1 && (
         <>
           <button
             type="button"
@@ -3995,7 +3017,7 @@ function LightboxViewer({
             className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Previous"
           >
-            â€¹
+            ‹
           </button>
           <button
             type="button"
@@ -4006,16 +3028,19 @@ function LightboxViewer({
             className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Next"
           >
-            â€º
+            ›
           </button>
         </>
-      ) : null}
+      )}
+
+      {/* Filename at bottom */}
       <div className="absolute bottom-4 left-0 right-0 z-10 text-center px-4">
         <p className="text-white/80 text-sm truncate max-w-2xl mx-auto bg-black/50 inline-block px-4 py-2 rounded-full backdrop-blur-md">
-          {currentAttachment.name}{" "}
-          <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
+          {currentAttachment.name} <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
         </p>
       </div>
+
+      {/* Media content */}
       <div
         className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center"
         onClick={(e) => e.stopPropagation()}
@@ -4038,7 +3063,7 @@ function LightboxViewer({
         ) : (
           <div className="p-8 text-white/80 bg-white/10 rounded-2xl">
             <p className="text-center">Preview not available for this file type.</p>
-            <p className="center text-sm mt-2 text-white/50">Use download button to save.</p>
+            <p className="text-center text-sm mt-2 text-white/50">Use download button to save.</p>
           </div>
         )}
       </div>

@@ -1,3 +1,5 @@
+// src/aiService.ts
+
 export interface AISearchIndex {
   provider: "groq";
   contentHash: string;
@@ -22,49 +24,59 @@ export interface DiaryEntry {
   aiSearchIndexError?: string;
 }
 
+// Automatically pulls the keys securely baked in from GitHub Actions
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
-
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = import.meta.env.VITE_GROQ_MODEL || "llama-3.1-8b-instant";
-const GEMINI_MODEL = import.meta.env.VITE_GEMINI_MODEL || "gemini-1.5-flash";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${import.meta.env.VITE_GEMINI_MODEL || "gemini-1.5-flash"}:generateContent`;
+const GROQ_MODEL_NAME = import.meta.env.VITE_GROQ_MODEL || "llama-3.1-8b-instant"; // Active, ultra-fast 2026 free-tier model
 
 const SYSTEM_PROMPT = `
 You are the private, intelligent AI brain of the user's personal journal.
-The user writes journal entries using casual English, Hindi written in Latin/Roman script (Hinglish), and internet abbreviations/slang.
+The user writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
 
 CRITICAL INSTRUCTIONS FOR TEMPORAL REASONING:
-1. When asked a timeline question, distinguish the date an event actually occurred from later entries where the user is remembering or mentioning it.
-2. Natively translate Hinglish concepts. "samundar", "pani", and "beach" can refer to the same semantic area.
-3. Be direct, concise, and smart. If multiple entries match, synthesize them instead of stopping at the first one.
+1. When asked a timeline question like "When did I go to X?", you must read all matching context carefully. Distinguish between the date an event actually occurred versus dates where the user is merely reminiscing, looking back, or talking about it after the fact.
+   - Example: If the user writes on 1st July 2026 that they went to the beach, and mentions the beach on July 2, 3, 4, and 5 in passing, your answer must point exactly to the date 1st july 2026. Do not list all dates.
+2. Natively translate and decode Hinglish semantic concepts. "samundar", "pani", and "beach" all mean the same thing. 
+3. Be direct, concise, and smart. Provide a single, well-reasoned answer text.
 
 CRITICAL FORMATTING RULE:
-Whenever you mention a specific date or pinpoint an event's date from the journal entries, format it exactly like this: [1st july 2026], [2nd august 2025], [23rd june 2026]. Use lowercase month names, correct ordinal suffixes, and square brackets.
+Whenever you mention a specific date or pinpoint an event's date from the journal entries in your text description, you MUST format it exactly like this: [1st july 2026], [2nd august 2025], [23rd june 2026] (always use lowercase for the month, add the correct ordinal suffix like st, nd, rd, th to the day number, and wrap the entire string in square brackets). 
+Do NOT write dates as plain text numbers; always use this bracketed text format so the system can automatically create an interactive link.
 `;
 
-const INDEX_SYSTEM_PROMPT = `
-You create compact, high-recall search indexes for personal diary entries.
-Capture facts, people, places, events, activities, emotions, conflicts, decisions, timelines, and Hinglish/slang meanings.
-Return only valid JSON. Do not include markdown.
+const SEARCH_INDEX_SYSTEM_PROMPT = `
+You are the private, intelligent AI brain of the user's personal journal.
+The user writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
+
+Create a compact search index for one diary entry.
+Return ONLY valid JSON matching the requested shape. No markdown.
 `;
 
-export async function generateSearchIndex(entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin">, contentHash: string): Promise<AISearchIndex> {
+/**
+ * 0. AI SEARCH INDEX GENERATION
+ */
+export async function generateSearchIndex(
+  entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin">,
+  contentHash: string,
+): Promise<AISearchIndex> {
   if (!GROQ_API_KEY) {
-    throw new Error("VITE_GROQ_API_KEY is missing. Groq is required for diary indexing.");
+    throw new Error("VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.");
   }
 
-  const entryText = cleanText(entry.bodyHtml);
+  const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, " ").replace(/\s+/g, " ").trim();
+  const currentText = cleanText(entry.bodyHtml);
+
   const prompt = `
-Create a durable search index for this diary entry.
+Create a compact search index for this diary entry.
 
 Date: ${entry.date}
-Title: ${entry.title || "Untitled entry"}
+Title: ${entry.title || "Untitled"}
 Daily win: ${entry.dailyWin || "None"}
-Entry text:
-${entryText}
+Entry text: ${currentText}
 
-Return this exact JSON shape:
+Return ONLY this JSON shape:
 {
   "summary": "2-4 sentence factual summary",
   "people": ["person names or relationship labels"],
@@ -78,13 +90,13 @@ Return this exact JSON shape:
 
   const rawContent = await groqChat(
     [
-      { role: "system", content: INDEX_SYSTEM_PROMPT },
+      { role: "system", content: SEARCH_INDEX_SYSTEM_PROMPT },
       { role: "user", content: prompt },
     ],
     0.15,
   );
-  const parsed = parseJsonObject(rawContent);
 
+  const parsed = parseJsonObject(rawContent);
   return {
     provider: "groq",
     contentHash,
@@ -99,64 +111,88 @@ Return this exact JSON shape:
   };
 }
 
+/**
+ * 1. AI SMART SEARCH
+ */
 export async function smartAISearch(query: string, entries: DiaryEntry[]): Promise<string> {
   if (!GROQ_API_KEY) {
     return "AI Error: VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.";
   }
 
+  const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
+
   const formattedContext = entries
-    .map((entry) => {
-      if (entry.aiSearchIndex) {
-        const index = entry.aiSearchIndex;
-        return [
-          `[Date: ${entry.date} | Title: ${entry.title}]`,
-          `Index summary: ${index.summary}`,
-          `People: ${index.people.join(", ") || "none"}`,
-          `Places: ${index.places.join(", ") || "none"}`,
-          `Events: ${index.events.join(", ") || "none"}`,
-          `Topics: ${index.topics.join(", ") || "none"}`,
-          `Emotions: ${index.emotions.join(", ") || "none"}`,
-          `Keywords: ${index.keywords.join(", ") || "none"}`,
-        ].join("\n");
+    .map((e) => {
+      if (e.aiSearchIndex) {
+        const index = e.aiSearchIndex;
+        return `[Date: ${e.date} | Title: ${e.title}]\nEntry text: ${[
+          index.summary,
+          ...index.people,
+          ...index.places,
+          ...index.events,
+          ...index.topics,
+          ...index.emotions,
+          ...index.keywords,
+        ].filter(Boolean).join(" | ")}`;
       }
 
-      return `[Date: ${entry.date} | Title: ${entry.title}]\nDaily win: ${entry.dailyWin || "None"}\nEntry text: ${cleanText(entry.bodyHtml)}`;
+      return `[Date: ${e.date} | Title: ${e.title}]\nEntry text: ${cleanText(e.bodyHtml)}`;
     })
     .join("\n\n---\n\n");
 
   const prompt = `
 User Query: "${query}"
 
-Below are ALL available diary memory indexes. They are compact, but they cover the full journal history. Do not stop at the first match; compare all entries and identify every relevant date before answering.
-
-${formattedContext || "No entries yet."}
+Below is the complete encrypted history of decrypted journal entries for context:
+${formattedContext}
 
 Based on the rules, deduce the exact answer to the user's query.
 `;
 
   try {
-    return await groqChat(
-      [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      0.2,
-    );
+    const response = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL_NAME,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.2,
+      }),
+    });
+
+    // Smart Error Catcher: Shows the real issue if the API fails
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      return `AI Response Error (${response.status}): ${errData?.error?.message || "Failed to communicate with Groq servers."}`;
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
   } catch (error) {
     console.error("Groq AI Error:", error);
-    return getAIErrorMessage(error, "Failed to dispatch request. Check your internet connection or browser console logs.");
+    return "Failed to dispatch request. Check your internet connection or browser console logs.";
   }
 }
 
+/**
+ * 2. AI DYNAMIC WRITING ASSISTANT
+ */
 export async function generateAICustomQuestion(entries: DiaryEntry[]): Promise<string> {
-  const fallback = "Start with the one thing your mind keeps circling today, then tell me what you think it is really asking from you.";
   if (!GEMINI_API_KEY || entries.length === 0) {
-    return fallback;
+    return "Start with the one thing your mind keeps circling today, then tell me what you think it is really asking from you.";
   }
 
+  const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, "");
+  
   const recentEntries = entries.slice(-5);
   const formattedContext = recentEntries
-    .map((entry) => `[Date: ${entry.date}]\nEntry: ${cleanText(entry.bodyHtml)}`)
+    .map((e) => `[Date: ${e.date}]\nEntry: ${cleanText(e.bodyHtml)}`)
     .join("\n\n---\n\n");
 
   const prompt = `
@@ -165,33 +201,38 @@ ${formattedContext}
 
 Generate ONE deeply personalized writing prompt for today.
 - Think like a sharp, emotionally intelligent diary companion with its own judgment.
-- Prefer a brief assertion plus a question.
+- Prefer a brief assertion plus a question, for example: "It sounds like X keeps returning. What do you think Y is trying to teach you?"
 - Notice contradictions, avoided feelings, repeated people, unresolved choices, energy shifts, and hidden wins.
+- Do NOT ask lazy prompts like "are you still thinking about it?" or "how was your day?"
 - Decode Hinglish, slang, and casual writing naturally.
 - Keep it friendly, specific, and under 32 words.
 - Output ONLY the prompt text.
 `;
 
   try {
-    return await geminiText(prompt, 0.7);
+    const content = await geminiText(SYSTEM_PROMPT, prompt, 0.7);
+    return content;
   } catch (error) {
-    console.error("Gemini prompt generation error:", error);
-    return fallback;
+    return "Your recent entries seem to be pointing at something unfinished. What part of it needs honesty instead of more overthinking?";
   }
 }
 
+/**
+ * 3. AI TOPIC TAGGING
+ */
 export async function generateAITopicTags(
   entry: Pick<DiaryEntry, "title" | "bodyHtml">,
   relatedEntries: DiaryEntry[] = [],
 ): Promise<string[]> {
   if (!GEMINI_API_KEY) return [];
 
+  const cleanText = (html: string) => html.replace(/<\/?[^>]+(>|$)/g, " ").replace(/\s+/g, " ").trim();
   const currentText = cleanText(entry.bodyHtml);
   if (`${entry.title} ${currentText}`.trim().length < 18) return [];
 
   const recentContext = relatedEntries
     .slice(-6)
-    .map((relatedEntry) => `[${relatedEntry.date}] ${relatedEntry.title}: ${cleanText(relatedEntry.bodyHtml).slice(0, 500)}`)
+    .map((e) => `[${e.date}] ${e.title}: ${cleanText(e.bodyHtml).slice(0, 500)}`)
     .join("\n");
 
   const prompt = `
@@ -214,13 +255,18 @@ Rules:
 `;
 
   try {
-    const rawContent = await geminiText(prompt, 0.25);
+    const rawContent = await geminiText(SYSTEM_PROMPT, prompt, 0.25);
     const jsonMatch = rawContent.match(/\[[\s\S]*\]/);
     const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawContent);
     if (!Array.isArray(parsed)) return [];
-    return normalizeTags(parsed.filter((tag): tag is string => typeof tag === "string")).slice(0, 8);
+
+    return parsed
+      .filter((tag): tag is string => typeof tag === "string")
+      .map((tag) => tag.toLowerCase().replace(/^#/, "").replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-"))
+      .filter(Boolean)
+      .slice(0, 8);
   } catch (error) {
-    console.error("Gemini AI tagging error:", error);
+    console.error("Gemini AI Tagging Error:", error);
     return [];
   }
 }
@@ -230,10 +276,10 @@ async function groqChat(messages: Array<{ role: "system" | "user"; content: stri
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${GROQ_API_KEY}`,
+      "Authorization": `Bearer ${GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: GROQ_MODEL_NAME,
       messages,
       temperature,
     }),
@@ -241,21 +287,29 @@ async function groqChat(messages: Array<{ role: "system" | "user"; content: stri
 
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));
-    throw new Error(`Groq ${response.status}: ${errData?.error?.message || "Failed to communicate with Groq servers."}`);
+    throw new Error(`AI Response Error (${response.status}): ${errData?.error?.message || "Failed to communicate with Groq servers."}`);
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || "";
+  return data.choices[0].message.content;
 }
 
-async function geminiText(prompt: string, temperature: number): Promise<string> {
+async function geminiText(systemPrompt: string, prompt: string, temperature: number): Promise<string> {
   const response = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ],
       generationConfig: {
         temperature,
       },
@@ -263,27 +317,11 @@ async function geminiText(prompt: string, temperature: number): Promise<string> 
   });
 
   if (!response.ok) {
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(`Gemini ${response.status}: ${errData?.error?.message || "Failed to communicate with Gemini servers."}`);
+    throw new Error("Failed to communicate with Gemini servers.");
   }
 
   const data = await response.json();
   return data.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("").trim() || "";
-}
-
-function cleanText(html: string) {
-  const text = html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<\/?[^>]+(>|$)/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-
-  return text.replace(/\s+/g, " ").trim();
 }
 
 function parseJsonObject(rawContent: string): Record<string, unknown> {
@@ -311,8 +349,4 @@ function normalizeKeywords(keywords: string[]) {
   return keywords
     .map((keyword) => keyword.toLowerCase().replace(/^#/, "").replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, " "))
     .filter(Boolean);
-}
-
-function getAIErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
 }

@@ -34,8 +34,9 @@ jobs:
         run: npm run build
         env: 
            VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
-           VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
            VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+           VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
+           VITE_GEMINI_MODEL: ${{ vars.VITE_GEMINI_MODEL }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

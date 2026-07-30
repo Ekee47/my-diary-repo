@@ -2502,7 +2502,7 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: 
 
 async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
   const response = await fetch(gitHubContentUrl(config), {
-    headers: githubHeaders(config),
+    headers: githubReadHeaders(config),
   });
 
   if (response.status === 404) {
@@ -2513,15 +2513,29 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
     throw new Error(await githubErrorMessage(response));
   }
 
-  const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; download_url?: string };
+  const data = (await response.json()) as { content?: string; encoding?: string; sha?: string; git_url?: string; download_url?: string };
   if (data.content && data.encoding === "base64") {
     return { exists: true, sha: data.sha ?? null, text: base64ToString(data.content.replace(/\s/g, "")) };
   }
 
+  if (data.git_url || data.sha) {
+    const blobResponse = await fetch(data.git_url ?? gitHubBlobUrl(config, data.sha ?? ""), {
+      headers: githubReadHeaders(config),
+    });
+    if (!blobResponse.ok) {
+      throw new Error(await githubErrorMessage(blobResponse));
+    }
+
+    const blob = (await blobResponse.json()) as { content?: string; encoding?: string };
+    if (blob.content && blob.encoding === "base64") {
+      return { exists: true, sha: data.sha ?? null, text: base64ToString(blob.content.replace(/\s/g, "")) };
+    }
+  }
+
   if (data.download_url) {
-    const rawResponse = await fetch(data.download_url, { headers: githubHeaders(config) });
+    const rawResponse = await fetch(data.download_url);
     if (!rawResponse.ok) {
-      throw new Error(await githubErrorMessage(rawResponse));
+      throw new Error(`GitHub ${rawResponse.status}: ${rawResponse.statusText}`);
     }
     return { exists: true, sha: data.sha ?? null, text: await rawResponse.text() };
   }
@@ -2562,6 +2576,18 @@ async function putGitHubVaultFile(
 function gitHubContentUrl(config: GitHubConfig) {
   const encodedPath = config.path.split("/").map(encodeURIComponent).join("/");
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodedPath}`;
+}
+
+function gitHubBlobUrl(config: GitHubConfig, sha: string) {
+  return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/git/blobs/${encodeURIComponent(sha)}`;
+}
+
+function githubReadHeaders(config: GitHubConfig): HeadersInit {
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${config.token}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
 }
 
 function githubHeaders(config: GitHubConfig): HeadersInit {
@@ -3075,4 +3101,3 @@ function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Something went wrong.";
 }
-

@@ -10,12 +10,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { cn } from "./utils/cn";
-import {
-  smartAISearch,
-  generateAICustomQuestion,
-  assessEntryEmotion,
-  generateSearchIndex,
-} from "./aiService";
+import { smartAISearch, generateAICustomQuestion, assessEntryEmotion, generateSearchIndex } from "./aiService";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy" | "meh";
 type Screen = "home" | "entry" | "view" | "year" | "ai";
@@ -128,24 +123,73 @@ const DEFAULT_CONFIG: GitHubConfig = {
 const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 
 const MOODS: MoodOption[] = [
-  { id: "happy", label: "Happy", color: "#f8c74a", glow: "rgba(248, 199, 74, 0.42)", description: "Bright, grateful, energized" },
-  { id: "depressed", label: "Depressed", color: "#5da8ff", glow: "rgba(93, 168, 255, 0.36)", description: "Heavy, quiet, low battery" },
-  { id: "sleepy", label: "Sleepy", color: "#a78bfa", glow: "rgba(167, 139, 250, 0.4)", description: "Slow, soft, tired mind" },
-  { id: "angry", label: "Angry", color: "#ff5b6c", glow: "rgba(255, 91, 108, 0.38)", description: "Hot, restless, intense" },
-  { id: "romantic", label: "Romantic", color: "#ff7ac8", glow: "rgba(255, 122, 200, 0.42)", description: "Tender, dreamy, connected" },
-  { id: "crazy", label: "Crazyy", color: "#33e0a1", glow: "rgba(51, 224, 161, 0.45)", description: "Wild, hyper, unpredictable" },
-  { id: "meh", label: "Meh", color: "#9ca3af", glow: "rgba(156, 163, 175, 0.35)", description: "mild, just \"okay\"" },
+  {
+    id: "happy",
+    label: "Happy",
+    color: "#f8c74a",
+    glow: "rgba(248, 199, 74, 0.42)",
+    description: "Bright, grateful, energized",
+  },
+  {
+    id: "depressed",
+    label: "Depressed",
+    color: "#5da8ff",
+    glow: "rgba(93, 168, 255, 0.36)",
+    description: "Heavy, quiet, low battery",
+  },
+  {
+    id: "sleepy",
+    label: "Sleepy",
+    color: "#a78bfa",
+    glow: "rgba(167, 139, 250, 0.4)",
+    description: "Slow, soft, tired mind",
+  },
+  {
+    id: "angry",
+    label: "Angry",
+    color: "#ff5b6c",
+    glow: "rgba(255, 91, 108, 0.38)",
+    description: "Hot, restless, intense",
+  },
+  {
+    id: "romantic",
+    label: "Romantic",
+    color: "#ff7ac8",
+    glow: "rgba(255, 122, 200, 0.42)",
+    description: "Tender, dreamy, connected",
+  },
+  {
+    id: "crazy",
+    label: "Crazyy",
+    color: "#33e0a1",
+    glow: "rgba(51, 224, 161, 0.45)",
+    description: "Wild, hyper, unpredictable",
+  },
+  { id: "meh", label: "Meh", color: "#9ca3af", glow: "rgba(156, 163, 175, 0.35)", description: 'mild, just "okay"' },
 ];
 
-const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>((acc, mood) => {
-  acc[mood.id] = mood;
-  return acc;
-}, {} as Record<MoodId, MoodOption>);
+const MOOD_BY_ID = MOODS.reduce<Record<MoodId, MoodOption>>(
+  (acc, mood) => {
+    acc[mood.id] = mood;
+    return acc;
+  },
+  {} as Record<MoodId, MoodOption>,
+);
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
 ];
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -177,10 +221,30 @@ function parseReadableDateToISO(readableDate: string): string | null {
 
 function finalizeParse(day: string, monthName: string, year: string): string | null {
   const months: Record<string, string> = {
-    january: "01", jan: "01", february: "02", feb: "02", march: "03", mar: "03",
-    april: "04", apr: "04", may: "05", june: "06", jun: "06",
-    july: "07", jul: "07", august: "08", aug: "08", september: "09", sep: "09", sept: "09",
-    october: "10", oct: "10", november: "11", nov: "11", december: "12", dec: "12",
+    january: "01",
+    jan: "01",
+    february: "02",
+    feb: "02",
+    march: "03",
+    mar: "03",
+    april: "04",
+    apr: "04",
+    may: "05",
+    june: "06",
+    jun: "06",
+    july: "07",
+    jul: "07",
+    august: "08",
+    aug: "08",
+    september: "09",
+    sep: "09",
+    sept: "09",
+    october: "10",
+    oct: "10",
+    november: "11",
+    nov: "11",
+    december: "12",
+    dec: "12",
   };
   const month = months[monthName];
   if (!month) return null;
@@ -221,7 +285,7 @@ export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIRespon
           title={`Click to open entry for ${isoDate}`}
         >
           {rawReadableDate}
-        </button>
+        </button>,
       );
     } else {
       parts.push(<span key={`date-${keyIndex++}`}>{rawReadableDate}</span>);
@@ -235,8 +299,8 @@ export function AIResponseRenderer({ text, onDateClick, allowedDates }: AIRespon
 }
 
 /* ==========================================================================
-   MAIN APP
-   ========================================================================== */
+ MAIN APP
+ ========================================================================== */
 export default function App() {
   const storedConfig = useMemo(loadStoredConfig, []);
   const todayKey = useMemo(() => dateToKey(new Date()), []);
@@ -317,7 +381,7 @@ export default function App() {
     }
     if (!driveTokenClientRef.current) {
       setDriveStatus("error");
-      setDriveError("Google sign-in is still loading â€” try again in a moment.");
+      setDriveError("Google sign-in is still loading - try again in a moment.");
       return;
     }
     setDriveStatus("connecting");
@@ -349,7 +413,7 @@ export default function App() {
       if (message.includes("401")) {
         driveTokenRef.current = null;
         setDriveStatus("disconnected");
-        setDriveError("Your Google Drive session expired â€” reconnect to keep backing up.");
+        setDriveError("Your Google Drive session expired - reconnect to keep backing up.");
       } else {
         setDriveStatus("error");
         setDriveError(message);
@@ -447,9 +511,9 @@ export default function App() {
   }
 
   /** Indexes one entry in the background (fires after a save, doesn't block the UI).
-   *  Merges the result into whatever the vault looks like when the AI call finishes,
-   *  so it can't clobber other changes made in the meantime, and skips silently if
-   *  that entry was edited again or deleted before indexing completed. */
+   * Merges the result into whatever the vault looks like when the AI call finishes,
+   * so it can't clobber other changes made in the meantime, and skips silently if
+   * that entry was edited again or deleted before indexing completed. */
   async function indexEntryInBackground(entry: DiaryEntry) {
     setActiveIndexingCount((c) => c + 1);
     try {
@@ -478,9 +542,9 @@ export default function App() {
   }
 
   /** One-time (per session) sweep that indexes any entries saved before this feature
-   *  existed, or where indexing previously failed. Runs quietly after unlock/reload.
-   *  Updates local state after EACH entry (so the status pill can show live progress),
-   *  but only commits to GitHub once, after the whole sweep finishes. */
+   * existed, or where indexing previously failed. Runs quietly after unlock/reload.
+   * Updates local state after EACH entry (so the status pill can show live progress),
+   * but only commits to GitHub once, after the whole sweep finishes. */
   async function backfillMissingIndexes(startVault: VaultData) {
     const missing = startVault.entries.filter((e) => !e.aiSearchIndex);
     if (!missing.length) return;
@@ -733,8 +797,8 @@ export default function App() {
 }
 
 /* ==========================================================================
-   UNLOCK SCREEN
-   ========================================================================== */
+ UNLOCK SCREEN
+ ========================================================================== */
 function UnlockScreen({
   initialConfig,
   syncState,
@@ -781,11 +845,15 @@ function UnlockScreen({
           <div className="grid max-w-2xl gap-3 text-sm text-slate-300/75 sm:grid-cols-3">
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
               <p className="text-cyan-100">Face card</p>
-              <p className="mt-2 text-slate-400">A good face card gets you in the room; standard character keeps you there.</p>
+              <p className="mt-2 text-slate-400">
+                A good face card gets you in the room; standard character keeps you there.
+              </p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
               <p className="text-cyan-100">Victim Card</p>
-              <p className="mt-2 text-slate-400">Stop playing the victim card in a story you have the power to rewrite</p>
+              <p className="mt-2 text-slate-400">
+                Stop playing the victim card in a story you have the power to rewrite
+              </p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 backdrop-blur-xl">
               <p className="text-cyan-100">Sympathy Card</p>
@@ -799,31 +867,69 @@ function UnlockScreen({
               <p className="text-sm uppercase tracking-[0.35em] text-cyan-200/50">Vault access</p>
               <h2 className="text-3xl font-semibold tracking-tight text-white">Open your GitHub diary file</h2>
               <p className="text-sm leading-6 text-slate-400">
-                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The passphrase is (name)@(bday)(username no.)
+                Your diary entries and attachments are encrypted before they are saved to the GitHub file below. The
+                passphrase is (name)@(bday)(username no.)
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="GitHub owner">
-                <input value={draftConfig.owner} onChange={(event) => updateConfig("owner", event.target.value)} placeholder="your-username" className="field-input" />
+                <input
+                  value={draftConfig.owner}
+                  onChange={(event) => updateConfig("owner", event.target.value)}
+                  placeholder="your-username"
+                  className="field-input"
+                />
               </Field>
               <Field label="Repository">
-                <input value={draftConfig.repo} onChange={(event) => updateConfig("repo", event.target.value)} placeholder="my-diary-repo" className="field-input" />
+                <input
+                  value={draftConfig.repo}
+                  onChange={(event) => updateConfig("repo", event.target.value)}
+                  placeholder="my-diary-repo"
+                  className="field-input"
+                />
               </Field>
               <Field label="Branch">
-                <input value={draftConfig.branch} onChange={(event) => updateConfig("branch", event.target.value)} placeholder="main" className="field-input" />
+                <input
+                  value={draftConfig.branch}
+                  onChange={(event) => updateConfig("branch", event.target.value)}
+                  placeholder="main"
+                  className="field-input"
+                />
               </Field>
               <Field label="Vault file path">
-                <input value={draftConfig.path} onChange={(event) => updateConfig("path", event.target.value)} placeholder="data/moonlit-diary-vault.json" className="field-input" />
+                <input
+                  value={draftConfig.path}
+                  onChange={(event) => updateConfig("path", event.target.value)}
+                  placeholder="data/moonlit-diary-vault.json"
+                  className="field-input"
+                />
               </Field>
             </div>
             <Field label="GitHub token">
-              <input type="password" value={draftConfig.token} onChange={(event) => updateConfig("token", event.target.value)} placeholder="Fine-grained token with Contents read/write" className="field-input" />
+              <input
+                type="password"
+                value={draftConfig.token}
+                onChange={(event) => updateConfig("token", event.target.value)}
+                placeholder="Fine-grained token with Contents read/write"
+                className="field-input"
+              />
             </Field>
             <Field label="Diary passphrase">
-              <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder="Only this opens the encrypted vault" className="field-input" />
+              <input
+                type="password"
+                value={passphrase}
+                onChange={(event) => setPassphrase(event.target.value)}
+                placeholder="Only this opens the encrypted vault"
+                className="field-input"
+              />
             </Field>
             <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm text-slate-300">
-              <input type="checkbox" checked={rememberConfig} onChange={(event) => setRememberConfig(event.target.checked)} className="h-4 w-4 accent-cyan-300" />
+              <input
+                type="checkbox"
+                checked={rememberConfig}
+                onChange={(event) => setRememberConfig(event.target.checked)}
+                className="h-4 w-4 accent-cyan-300"
+              />
               Remember GitHub details on this device. Diary data still stays in the GitHub vault file.
             </label>
             {syncError ? <SyncError message={syncError} compact /> : null}
@@ -843,8 +949,8 @@ function UnlockScreen({
 }
 
 /* ==========================================================================
-   TOP BAR
-   ========================================================================== */
+ TOP BAR
+ ========================================================================== */
 function TopBar({
   syncState,
   currentScreen,
@@ -882,18 +988,29 @@ function TopBar({
       </button>
       <div className="flex flex-wrap items-center gap-2">
         <SyncBadge state={syncState} />
-        <button type="button" onClick={onHome} className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}>
+        <button
+          type="button"
+          onClick={onHome}
+          className={cn("nav-button", currentScreen === "home" && "bg-white/10 text-white")}
+        >
           Calendar
         </button>
         <button
           type="button"
           onClick={onAIScreen}
-          className={cn("nav-button relative overflow-hidden group", currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200")}
+          className={cn(
+            "nav-button relative overflow-hidden group",
+            currentScreen === "ai" && "bg-cyan-500/10 border-cyan-400/30 text-cyan-200",
+          )}
         >
           <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-fuchsia-500/10 opacity-50" />
           <span className="relative flex items-center gap-1">AI Hub</span>
         </button>
-        <button type="button" onClick={onYear} className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}>
+        <button
+          type="button"
+          onClick={onYear}
+          className={cn("nav-button", currentScreen === "year" && "bg-white/10 text-white")}
+        >
           Year in pixels
         </button>
         <button type="button" onClick={onNewEntry} className="nav-button-primary">
@@ -956,8 +1073,8 @@ function SyncBadge({ state }: { state: SyncState }) {
 }
 
 /* ==========================================================================
-   HOME VIEW â€” Calendar + Selected day panel + View Entry button
-   ========================================================================== */
+ HOME VIEW - Calendar + Selected day panel + View Entry button
+ ========================================================================== */
 function HomeView({
   entryByDate,
   selectedDate,
@@ -1015,7 +1132,17 @@ function HomeView({
               </h1>
               <span className="text-xl text-slate-400 group-hover:text-cyan-200 transition flex items-center gap-2">
                 {yearLabel}
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 group-hover:opacity-100">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="opacity-70 group-hover:opacity-100"
+                >
                   <path d="M6 9l6 6 6-6" />
                 </svg>
               </span>
@@ -1025,13 +1152,27 @@ function HomeView({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))} className="round-button" aria-label="Previous month">
+            <button
+              type="button"
+              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, -1))}
+              className="round-button"
+              aria-label="Previous month"
+            >
               Prev
             </button>
-            <button type="button" onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))} className="round-button">
+            <button
+              type="button"
+              onClick={() => onVisibleMonthChange(keyToDate(dateToKey(new Date())))}
+              className="round-button"
+            >
               Today
             </button>
-            <button type="button" onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))} className="round-button" aria-label="Next month">
+            <button
+              type="button"
+              onClick={() => onVisibleMonthChange(addMonths(visibleMonth, 1))}
+              className="round-button"
+              aria-label="Next month"
+            >
               Next
             </button>
           </div>
@@ -1073,7 +1214,10 @@ function HomeView({
                   <p className="text-xs uppercase tracking-[0.25em] text-slate-500 mb-1.5">Tags</p>
                   <div className="flex flex-wrap gap-1.5">
                     {entryTags.map((t) => (
-                      <span key={t} className="text-xs px-2.5 py-1 rounded-md bg-cyan-500/10 border border-cyan-400/20 text-cyan-200">
+                      <span
+                        key={t}
+                        className="text-xs px-2.5 py-1 rounded-md bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
+                      >
                         #{t}
                       </span>
                     ))}
@@ -1084,9 +1228,13 @@ function HomeView({
                 <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Daily win</p>
                 <p className="mt-2 leading-6 text-slate-300">{selectedEntry.dailyWin || "No daily win added yet."}</p>
               </div>
-              <p className="line-clamp-4 text-sm leading-6 text-slate-400">{htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}</p>
+              <p className="line-clamp-4 text-sm leading-6 text-slate-400">
+                {htmlToText(selectedEntry.bodyHtml) || "Entry body is empty."}
+              </p>
               <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-400">
-                <span>{selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}</span>
+                <span>
+                  {selectedEntry.attachments.length} attachment{selectedEntry.attachments.length === 1 ? "" : "s"}
+                </span>
                 <span>{formatBytes(totalAttachmentBytes(selectedEntry.attachments))}</span>
               </div>
             </div>
@@ -1113,15 +1261,27 @@ function HomeView({
           )}
           {selectedEntry ? (
             <div className="mt-5 grid gap-2 sm:grid-cols-2">
-              <button type="button" onClick={() => onOpenViewEntry(selectedDate)} className="w-full nav-button justify-center py-3.5">
+              <button
+                type="button"
+                onClick={() => onOpenViewEntry(selectedDate)}
+                className="w-full nav-button justify-center py-3.5"
+              >
                 View entry
               </button>
-              <button type="button" onClick={() => onOpenEntry(selectedDate)} className="w-full nav-button-primary justify-center py-3.5">
+              <button
+                type="button"
+                onClick={() => onOpenEntry(selectedDate)}
+                className="w-full nav-button-primary justify-center py-3.5"
+              >
                 Edit entry
               </button>
             </div>
           ) : (
-            <button type="button" onClick={() => onOpenEntry(selectedDate)} className="mt-5 w-full nav-button-primary justify-center py-4">
+            <button
+              type="button"
+              onClick={() => onOpenEntry(selectedDate)}
+              className="mt-5 w-full nav-button-primary justify-center py-4"
+            >
               {hasDraft ? "Continue draft" : "Write entry"}
             </button>
           )}
@@ -1144,8 +1304,8 @@ function HomeView({
 }
 
 /* ==========================================================================
-   MONTHLY CALENDAR
-   ========================================================================== */
+ MONTHLY CALENDAR
+ ========================================================================== */
 function MonthlyCalendar({
   visibleMonth,
   selectedDate,
@@ -1183,15 +1343,23 @@ function MonthlyCalendar({
               onDoubleClick={() => onOpenEntry(cell.dateKey)}
               className={cn(
                 "group relative aspect-square overflow-hidden rounded-[1.35rem] border text-left transition duration-300",
-                cell.inCurrentMonth ? "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]" : "border-white/[0.04] bg-white/[0.015] text-slate-600",
-                isSelected ? "scale-[1.02] border-cyan-200/70 bg-cyan-100/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]" : "",
+                cell.inCurrentMonth
+                  ? "border-white/10 bg-white/[0.035] hover:bg-white/[0.07]"
+                  : "border-white/[0.04] bg-white/[0.015] text-slate-600",
+                isSelected
+                  ? "scale-[1.02] border-cyan-200/70 bg-cyan-100/10 shadow-[0_0_40px_rgba(34,211,238,0.18)]"
+                  : "",
                 isToday ? "ring-1 ring-fuchsia-200/40" : "",
               )}
               style={isSelected && mood ? { boxShadow: `0 0 44px ${mood.glow}` } : undefined}
             >
               <span className="absolute inset-x-3 top-3 flex items-center justify-between">
-                <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>{cell.day}</span>
-                {isToday ? <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" /> : null}
+                <span className={cn("text-lg font-medium", cell.inCurrentMonth ? "text-slate-200" : "text-slate-600")}>
+                  {cell.day}
+                </span>
+                {isToday ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-300 shadow-[0_0_12px_rgba(244,114,182,0.9)]" />
+                ) : null}
               </span>
               {entry ? (
                 <span
@@ -1221,8 +1389,8 @@ function MonthlyCalendar({
 }
 
 /* ==========================================================================
-   ENTRY EDITOR â€” manual #tags, real LLM-based emotion assessment
-   ========================================================================== */
+ ENTRY EDITOR - manual #tags, real LLM-based emotion assessment
+ ========================================================================== */
 function EntryEditor({
   dateKey,
   entry,
@@ -1257,16 +1425,14 @@ function EntryEditor({
   const [aiPrompt, setAIPrompt] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<string>("");
-  const [aiAssessment, setAiAssessment] = useState<string>(
-    assessmentCache[dateKey] ?? entry?.aiAssessment ?? "",
-  );
+  const [aiAssessment, setAiAssessment] = useState<string>(assessmentCache[dateKey] ?? entry?.aiAssessment ?? "");
   const [isAssessing, setIsAssessing] = useState(false);
 
   const isSaving = syncState === "saving" || isWorking;
   const activeMood = MOOD_BY_ID[mood];
   const autoSaveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Known tags across ALL entries â€” powers the #tag dropdown
+  // Known tags across ALL entries - powers the #tag dropdown
   const knownTags = useMemo(() => {
     const set = new Set<string>();
     entryByDate.forEach((e) => {
@@ -1275,7 +1441,7 @@ function EntryEditor({
     return Array.from(set).sort();
   }, [entryByDate]);
 
-  // Tags extracted from the current entry's body â€” drives the chip display
+  // Tags extracted from the current entry's body - drives the chip display
   const currentTags = useMemo(() => extractManualTags(bodyHtml, title), [bodyHtml, title]);
 
   const currentDraftState = JSON.stringify({ title, mood, bodyHtml, dailyWin, attachments });
@@ -1285,7 +1451,7 @@ function EntryEditor({
 
   useEffect(() => {
     setLastSavedDraft(currentDraftState);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1311,7 +1477,7 @@ function EntryEditor({
     };
   }, [dateKey, title, mood, bodyHtml, dailyWin, attachments, hasUnsavedChanges, currentDraftState]);
 
-  // AI Emotion Assessment â€” debounced LLM call, result cached per-entry
+  // AI Emotion Assessment - debounced LLM call, result cached per-entry
   useEffect(() => {
     const plain = htmlToText(bodyHtml).trim();
     if (plain.length < 8) {
@@ -1440,13 +1606,21 @@ function EntryEditor({
           )}
         </div>
         <div className="mt-4 rounded-2xl border border-cyan-500/10 bg-gradient-to-r from-cyan-950/20 to-fuchsia-950/20 p-4 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">ASSISTANT v1.1</div>
+          <div className="absolute top-0 right-0 p-3 text-xs text-cyan-400/40 pointer-events-none font-mono">
+            ASSISTANT v1.1
+          </div>
           <div className="flex items-center justify-between gap-4">
             <div>
               <h4 className="text-sm font-semibold tracking-wide text-cyan-200">Privacy-First AI Writing Assistant</h4>
-              <p className="text-xs text-slate-400 mt-0.5">Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Stuck with writer's block? Tap to construct a dynamic, personalized question reflection.
+              </p>
             </div>
-            <button type="button" onClick={triggerAIPrompt} className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0">
+            <button
+              type="button"
+              onClick={triggerAIPrompt}
+              className="px-3 py-1.5 rounded-xl bg-cyan-400 text-slate-950 font-medium text-xs hover:bg-cyan-300 shadow transition shrink-0"
+            >
               Generate Prompt
             </button>
           </div>
@@ -1459,14 +1633,16 @@ function EntryEditor({
         <div className="mt-6 space-y-5">
           <div className="flex flex-wrap items-center gap-3">
             <MoodChip mood={mood} />
-            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">{formatDateLong(dateKey)}</span>
+            <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-sm text-slate-400">
+              {formatDateLong(dateKey)}
+            </span>
             <span
               className={cn(
                 "text-xs bg-cyan-500/5 px-3 py-1 rounded-full border border-cyan-500/10",
                 isAssessing ? "text-cyan-300/60 animate-pulse" : "text-cyan-300/70",
               )}
             >
-              AI Assessment: {isAssessing ? "reading your vibeâ€¦" : aiAssessment || "â€”"}
+              AI Assessment: {isAssessing ? "reading your vibeâ€¦" : aiAssessment || " - "}
             </span>
           </div>
           <input
@@ -1481,19 +1657,24 @@ function EntryEditor({
               <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
               <div className="flex flex-wrap gap-1.5">
                 {currentTags.map((tag) => (
-                  <span key={tag} className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200">
+                  <span
+                    key={tag}
+                    className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
+                  >
                     #{tag}
                   </span>
                 ))}
               </div>
               <p className="mt-2 text-[11px] text-slate-500">
-                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entry to add tags. Press space or enter to confirm.
+                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entry to add tags. Press
+                space or enter to confirm.
               </p>
             </div>
           ) : (
             <div className="pt-2">
               <p className="text-[11px] text-slate-500">
-                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#tagname</code> in your entry to organize it. Press space or enter to confirm.
+                Tip: type <code className="px-1 py-0.5 rounded bg-white/10">#tagname</code> in your entry to organize
+                it. Press space or enter to confirm.
               </p>
             </div>
           )}
@@ -1503,7 +1684,9 @@ function EntryEditor({
       <aside className="space-y-4">
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
-          <p className="mt-3 text-sm leading-6 text-slate-400">Pick the color that will light up this day in the calendar and year view.</p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            Pick the color that will light up this day in the calendar and year view.
+          </p>
           <div className="mt-5 grid gap-2">
             {MOODS.map((item) => (
               <button
@@ -1512,10 +1695,15 @@ function EntryEditor({
                 onClick={() => setMood(item.id)}
                 className={cn(
                   "group flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition duration-300",
-                  item.id === mood ? "border-white/30 bg-white/[0.09]" : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
+                  item.id === mood
+                    ? "border-white/30 bg-white/[0.09]"
+                    : "border-white/10 bg-black/20 hover:bg-white/[0.055]",
                 )}
               >
-                <span className="h-4 w-4 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }} />
+                <span
+                  className="h-4 w-4 rounded-full"
+                  style={{ backgroundColor: item.color, boxShadow: `0 0 18px ${item.glow}` }}
+                />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium text-white">{item.label}</span>
                   <span className="block truncate text-xs text-slate-500">{item.description}</span>
@@ -1524,7 +1712,10 @@ function EntryEditor({
             ))}
           </div>
         </section>
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}>
+        <section
+          className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl"
+          style={{ boxShadow: `0 0 38px ${activeMood.glow}` }}
+        >
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Daily win</p>
           <textarea
             value={dailyWin}
@@ -1541,8 +1732,8 @@ function EntryEditor({
 }
 
 /* ==========================================================================
-   VIEW ENTRY SCREEN â€” read-only, no edit / delete affordances
-   ========================================================================== */
+ VIEW ENTRY SCREEN - read-only, no edit / delete affordances
+ ========================================================================== */
 function ViewEntryScreen({
   dateKey,
   entry,
@@ -1607,30 +1798,28 @@ function ViewEntryScreen({
               </span>
             ) : null}
           </div>
-         <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">
- {entry.title}
-</h1>
+          <h1 className="w-full text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">{entry.title}</h1>
 
-<div
- className="diary-prose min-h-[18rem] text-base leading-8 text-slate-200"
- dangerouslySetInnerHTML={{ __html: sanitizeHtmlWithTagChips(entry.bodyHtml) }}
-/>
+          <div
+            className="diary-prose min-h-[18rem] text-base leading-8 text-slate-200"
+            dangerouslySetInnerHTML={{ __html: sanitizeHtmlWithTagChips(entry.bodyHtml) }}
+          />
 
-{tags.length > 0 ? (
- <div className="pt-3 border-t border-white/10">
- <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
- <div className="flex flex-wrap gap-1.5">
- {tags.map((tag) => (
- <span
- key={tag}
- className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
- >
- #{tag}
- </span>
- ))}
- </div>
- </div>
-) : null}
+          {tags.length > 0 ? (
+            <div className="pt-3 border-t border-white/10">
+              <span className="text-xs uppercase tracking-widest text-slate-500 block mb-2">Tags</span>
+              <div className="flex flex-wrap gap-1.5">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="text-xs px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200"
+                  >
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
       <aside className="space-y-4">
@@ -1640,10 +1829,16 @@ function ViewEntryScreen({
             {entry.dailyWin || "No daily win added yet."}
           </p>
         </section>
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl" style={{ boxShadow: `0 0 38px ${mood.glow}` }}>
+        <section
+          className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 backdrop-blur-2xl"
+          style={{ boxShadow: `0 0 38px ${mood.glow}` }}
+        >
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Mood</p>
           <div className="mt-4 flex items-center gap-3">
-            <span className="h-4 w-4 rounded-full" style={{ backgroundColor: mood.color, boxShadow: `0 0 18px ${mood.glow}` }} />
+            <span
+              className="h-4 w-4 rounded-full"
+              style={{ backgroundColor: mood.color, boxShadow: `0 0 18px ${mood.glow}` }}
+            />
             <span className="font-medium text-white">{mood.label}</span>
           </div>
           <p className="mt-2 text-xs text-slate-500">{mood.description}</p>
@@ -1662,12 +1857,18 @@ function ViewEntryScreen({
                   className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
                 >
                   {attachment.type.startsWith("image/") ? (
-                    <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
+                    <img
+                      src={attachment.dataUrl}
+                      alt={attachment.name}
+                      className="h-full w-full object-cover transition group-hover:opacity-80"
+                    />
                   ) : (
                     <video src={attachment.dataUrl} className="h-full w-full object-cover" />
                   )}
                   <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
-                    <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">View fullscreen</span>
+                    <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
+                      View fullscreen
+                    </span>
                   </span>
                 </button>
                 <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -1693,8 +1894,8 @@ function ViewEntryScreen({
 }
 
 /* ==========================================================================
-   RICH TEXT EDITOR + #tag dropdown picker
-   ========================================================================== */
+ RICH TEXT EDITOR + #tag dropdown picker
+ ========================================================================== */
 function RichTextEditor({
   value,
   onChange,
@@ -1861,13 +2062,13 @@ function RichTextEditor({
         return;
       }
     }
-    // Confirm a new tag when user hits space â€” commit `#query` if it doesn't match an existing tag exactly
+    // Confirm a new tag when user hits space - commit `#query` if it doesn't match an existing tag exactly
     if (event.key === " " || event.key === "Enter") {
       const { text } = getTextBeforeCaret();
       const match = text.match(/(^|\s)#([\w-]+)$/);
       if (match) {
         const tagName = match[2].toLowerCase();
-        // It's already inserted into the text â€” no special action needed beyond closing the picker.
+        // It's already inserted into the text - no special action needed beyond closing the picker.
         setTagPicker((p) => ({ ...p, open: false }));
       }
     }
@@ -1891,7 +2092,9 @@ function RichTextEditor({
         </div>
         <div className="relative">
           {!htmlToText(value) && !isFocused ? (
-            <div className="pointer-events-none absolute left-5 top-5 text-slate-600">Start writing what happened today...</div>
+            <div className="pointer-events-none absolute left-5 top-5 text-slate-600">
+              Start writing what happened today...
+            </div>
           ) : null}
           <div
             ref={editorRef}
@@ -1978,8 +2181,8 @@ function ToolbarButton({
 }
 
 /* ==========================================================================
-   ATTACHMENT PANEL
-   ========================================================================== */
+ ATTACHMENT PANEL
+ ========================================================================== */
 function AttachmentPanel({
   attachments,
   onChange,
@@ -2026,15 +2229,28 @@ function AttachmentPanel({
 
   return (
     <section className="rounded-[2rem] border border-white/10 bg-white/[0.045] p-5 shadow-2xl shadow-black/30 backdrop-blur-2xl">
-      <input ref={inputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleFileChange} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        className="hidden"
+        onChange={handleFileChange}
+      />
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-100/50">Attachments</p>
           <p className="mt-3 text-sm leading-6 text-slate-400">
-            Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB (base64 adds overhead).
+            Attach photos or videos. Click media to view fullscreen. For reliable GitHub saves, keep total under ~75MB
+            (base64 adds overhead).
           </p>
         </div>
-        <button type="button" onClick={() => inputRef.current?.click()} disabled={isLoading} className="round-button shrink-0">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={isLoading}
+          className="round-button shrink-0"
+        >
           {isLoading ? "Loading..." : "Add"}
         </button>
       </div>
@@ -2048,9 +2264,13 @@ function AttachmentPanel({
       </div>
       {totalBytes > 50 * 1024 * 1024 ? (
         <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100/80">
-          GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail to save.
+          GitHub API has a ~100MB limit per file after base64 encoding. Files over ~75MB raw (or 500MB total) may fail
+          to save.
           {totalBytes > 75 * 1024 * 1024 ? (
-            <strong className="block mt-1 text-rose-300">Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500). Consider removing larger videos.</strong>
+            <strong className="block mt-1 text-rose-300">
+              Current attachments total {formatBytes(totalBytes)} which may cause GitHub save errors (HTTP 500).
+              Consider removing larger videos.
+            </strong>
           ) : null}
         </p>
       ) : null}
@@ -2064,12 +2284,18 @@ function AttachmentPanel({
               className="block w-full aspect-video bg-slate-900 relative group cursor-zoom-in"
             >
               {attachment.type.startsWith("image/") ? (
-                <img src={attachment.dataUrl} alt={attachment.name} className="h-full w-full object-cover transition group-hover:opacity-80" />
+                <img
+                  src={attachment.dataUrl}
+                  alt={attachment.name}
+                  className="h-full w-full object-cover transition group-hover:opacity-80"
+                />
               ) : (
                 <video src={attachment.dataUrl} className="h-full w-full object-cover" />
               )}
               <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition opacity-0 group-hover:opacity-100">
-                <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">Click to view fullscreen</span>
+                <span className="bg-black/70 backdrop-blur px-3 py-1.5 rounded-full text-xs text-white font-medium">
+                  Click to view fullscreen
+                </span>
               </span>
             </button>
             <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -2103,8 +2329,8 @@ function AttachmentPanel({
 }
 
 /* ==========================================================================
-   YEAR PIXELS VIEW
-   ========================================================================== */
+ YEAR PIXELS VIEW
+ ========================================================================== */
 function YearPixelsView({
   year,
   entryByDate,
@@ -2128,24 +2354,42 @@ function YearPixelsView({
             <p className="text-sm uppercase tracking-[0.5em] text-fuchsia-200/50">Year in pixels</p>
             <h1 className="text-6xl font-semibold tracking-[-0.08em] text-white sm:text-8xl">{year}</h1>
             <p className="max-w-2xl text-sm leading-6 text-slate-400">
-              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional map.
+              Every dot is a day. Saved entries glow with the mood you chose, so the year becomes a private emotional
+              map.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={onBack} className="round-button">Back</button>
-            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">Prev year</button>
-            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">This year</button>
-            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">Next year</button>
+            <button type="button" onClick={onBack} className="round-button">
+              Back
+            </button>
+            <button type="button" onClick={() => onYearChange(year - 1)} className="round-button">
+              Prev year
+            </button>
+            <button type="button" onClick={() => onYearChange(new Date().getFullYear())} className="round-button">
+              This year
+            </button>
+            <button type="button" onClick={() => onYearChange(year + 1)} className="round-button">
+              Next year
+            </button>
           </div>
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-slate-400">
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">{writtenDays} written day{writtenDays === 1 ? "" : "s"}</span>
-          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">Click any pixel to open that date</span>
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">
+            {writtenDays} written day{writtenDays === 1 ? "" : "s"}
+          </span>
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-4 py-2">
+            Click any pixel to open that date
+          </span>
         </div>
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {months.map((monthDate) => (
-          <MonthPixelPanel key={monthDate.toISOString()} monthDate={monthDate} entryByDate={entryByDate} onOpenEntry={onOpenEntry} />
+          <MonthPixelPanel
+            key={monthDate.toISOString()}
+            monthDate={monthDate}
+            entryByDate={entryByDate}
+            onOpenEntry={onOpenEntry}
+          />
         ))}
       </div>
       <MoodLegend />
@@ -2197,8 +2441,8 @@ function MonthPixelPanel({
 }
 
 /* ==========================================================================
-   AI INTELLIGENCE VIEW â€” manual tag filter, no Automatic Topic Cloud
-   ========================================================================== */
+ AI INTELLIGENCE VIEW - manual tag filter, no Automatic Topic Cloud
+ ========================================================================== */
 function IndexingStatusPill({
   active,
   indexedCount,
@@ -2217,7 +2461,7 @@ function IndexingStatusPill({
   if (total === 0) return null;
 
   if (active) {
-    // Prefer the attempted-count from the live sweep (moves even through failures) â€”
+    // Prefer the attempted-count from the live sweep (moves even through failures) -
     // fall back to indexedCount only if a progress batch isn't in flight (e.g. a lone
     // per-entry background index after a save, which has no batch total of its own).
     const shownProgress = progress.total > 0 ? progress.attempted : indexedCount;
@@ -2233,7 +2477,9 @@ function IndexingStatusPill({
   if (allIndexed) {
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200">
-        <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-emerald-400 text-[8px] font-bold text-emerald-950">âœ“</span>
+        <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-emerald-400 text-[8px] font-bold text-emerald-950">
+          âœ“
+        </span>
         All entries indexed
       </span>
     );
@@ -2244,10 +2490,12 @@ function IndexingStatusPill({
       type="button"
       onClick={onRetry}
       className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/20"
-      title="Some entries couldn't be indexed (likely rate-limited) â€” click to retry"
+      title="Some entries couldn't be indexed (likely rate-limited) - click to retry"
     >
-      <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-amber-400 text-[8px] font-bold text-amber-950">âœ•</span>
-      {indexedCount}/{total} indexed â€” retry
+      <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-amber-400 text-[8px] font-bold text-amber-950">
+        âœ•
+      </span>
+      {indexedCount}/{total} indexed - retry
     </button>
   );
 }
@@ -2279,7 +2527,14 @@ function AIIntelligenceView({
   // Entries with actual written content are the ones that need (and get) a search index.
   // Empty-body entries are excluded so they can never keep the progress stuck below 100%.
   const indexableEntries = useMemo(
-    () => entries.filter((e) => e.bodyHtml.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim().length > 0),
+    () =>
+      entries.filter(
+        (e) =>
+          e.bodyHtml
+            .replace(/<[^>]+>/g, "")
+            .replace(/&nbsp;/g, " ")
+            .trim().length > 0,
+      ),
     [entries],
   );
   const indexedCount = useMemo(
@@ -2289,8 +2544,7 @@ function AIIntelligenceView({
   const totalIndexable = indexableEntries.length;
   const allIndexed = totalIndexable > 0 && indexedCount >= totalIndexable;
 
-
-  // Manual tag cloud â€” aggregated from #tags across all entries
+  // Manual tag cloud - aggregated from #tags across all entries
   const globalTagCloud = useMemo(() => {
     const map: Record<string, number> = {};
     entries.forEach((e) => {
@@ -2337,7 +2591,15 @@ function AIIntelligenceView({
   }, [entries, expandedTerms, activeTag]);
 
   const emotionalDistribution = useMemo(() => {
-    const tallies: Record<MoodId, number> = { happy: 0, depressed: 0, sleepy: 0, angry: 0, romantic: 0, crazy: 0, meh: 0 };
+    const tallies: Record<MoodId, number> = {
+      happy: 0,
+      depressed: 0,
+      sleepy: 0,
+      angry: 0,
+      romantic: 0,
+      crazy: 0,
+      meh: 0,
+    };
     entries.forEach((e) => {
       if (tallies[e.mood] !== undefined) tallies[e.mood]++;
     });
@@ -2358,7 +2620,7 @@ function AIIntelligenceView({
     }
     lastSearchAtRef.current = now;
 
-    if (isSearchingAI) return;            // lock â€” prevents queue collision
+    if (isSearchingAI) return; // lock - prevents queue collision
     setIsSearchingAI(true);
     setSearchError(null);
     setAiAnswer("Thinking through your timeline memory...");
@@ -2379,14 +2641,15 @@ function AIIntelligenceView({
     }
   }
 
-
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px] animate-screen-in">
       <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/60 p-4 shadow-2xl shadow-black/40 backdrop-blur-2xl sm:p-6 space-y-6">
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.5em] text-cyan-200/50">Semantic Intelligence</p>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Vault Search & Deep Analytics</h1>
+            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+              Vault Search & Deep Analytics
+            </h1>
             <IndexingStatusPill
               active={indexingActive}
               indexedCount={indexedCount}
@@ -2397,16 +2660,29 @@ function AIIntelligenceView({
             />
           </div>
           <p className="text-sm text-slate-400 max-w-2xl">
-            Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong> button to prompt Gemini to traverse dates and language gaps natively. Dates in AI responses are clickable!
+            Type natural questions or timeline queries. Hit the <strong className="text-cyan-200">Ask AI Brain</strong>{" "}
+            button to prompt Llama to traverse dates and language gaps natively. Dates in AI responses are clickable!
           </p>
         </div>
-        <form onSubmit={handleAISubmit} className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-              className="text-slate-400 shrink-0" aria-hidden="true">
-                  <circle cx="11" cy="11" r="7" />
-                    <path d="m20 20-3.5-3.5" />
-</svg>
+        <form
+          onSubmit={handleAISubmit}
+          className="relative rounded-2xl border border-white/10 bg-black/40 px-4 py-3 flex items-center gap-3 shadow-inner focus-within:border-cyan-400/50 transition"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-slate-400 shrink-0"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
           <input
             type="text"
             value={searchQuery}
@@ -2439,14 +2715,22 @@ function AIIntelligenceView({
           <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/5">
             <span className="text-cyan-400/70 font-mono">Concept expansion matches:</span>
             {expandedTerms.map((t) => (
-              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">{t}</span>
+              <span key={t} className="px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/30 text-cyan-300">
+                {t}
+              </span>
             ))}
           </div>
         ) : null}
         {activeTag ? (
           <div className="flex items-center justify-between bg-fuchsia-950/20 border border-fuchsia-500/20 px-4 py-2 rounded-xl text-sm text-fuchsia-200">
-            <span>Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong></span>
-            <button type="button" onClick={() => setActiveTag(null)} className="text-xs uppercase tracking-wider underline hover:text-white">
+            <span>
+              Filtering workspace to only entries matching topic: <strong>#{activeTag}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveTag(null)}
+              className="text-xs uppercase tracking-wider underline hover:text-white"
+            >
               Remove Filter
             </button>
           </div>
@@ -2471,7 +2755,9 @@ function AIIntelligenceView({
         ) : null}
         <div className="space-y-3">
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
-            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Matched Entries Output ({filteredEntries.length})</h3>
+            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">
+              Matched Entries Output ({filteredEntries.length})
+            </h3>
             <span className="text-xs text-slate-600">Click entry row to jump instantly to document layout editor</span>
           </div>
           {filteredEntries.length > 0 ? (
@@ -2490,13 +2776,18 @@ function AIIntelligenceView({
                         <span className="text-xs font-mono tracking-wider text-cyan-300/80 bg-cyan-950/40 border border-cyan-900/50 px-2 py-0.5 rounded">
                           {item.date}
                         </span>
-                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">{item.title}</h4>
+                        <h4 className="font-medium text-white truncate group-hover:text-cyan-200 transition">
+                          {item.title}
+                        </h4>
                       </div>
                       <p className="text-xs text-slate-400 truncate max-w-xl">{htmlToText(item.bodyHtml)}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-xs text-slate-500 hidden sm:inline">{item.aiAssessment || ""}</span>
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }} />
+                      <span
+                        className="h-3 w-3 rounded-full"
+                        style={{ backgroundColor: option?.color, boxShadow: `0 0 12px ${option?.glow}` }}
+                      />
                     </div>
                   </button>
                 );
@@ -2504,7 +2795,8 @@ function AIIntelligenceView({
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-slate-500 text-sm">
-              No entries found matching the given parameters. Try revising your text query strings or toggle active filter tags.
+              No entries found matching the given parameters. Try revising your text query strings or toggle active
+              filter tags.
             </div>
           )}
         </div>
@@ -2524,10 +2816,15 @@ function AIIntelligenceView({
                 return (
                   <div key={m.id} className="flex items-center justify-between text-xs">
                     <span className="text-white font-medium flex items-center gap-2">
-                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: m.color, boxShadow: `0 0 12px ${m.glow}` }} />
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: m.color, boxShadow: `0 0 12px ${m.glow}` }}
+                      />
                       {m.label}
                     </span>
-                    <span className="text-slate-500">{count} ({pct.toFixed(0)}%)</span>
+                    <span className="text-slate-500">
+                      {count} ({pct.toFixed(0)}%)
+                    </span>
                   </div>
                 );
               })}
@@ -2537,7 +2834,10 @@ function AIIntelligenceView({
         <section className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 backdrop-blur-2xl space-y-4">
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/50">Your Tag Cloud</p>
-            <p className="text-xs text-slate-400 mt-1">Tags you added with <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entries. Click a tag to filter results to entries that contain it.</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Tags you added with <code className="px-1 py-0.5 rounded bg-white/10">#</code> in your entries. Click a
+              tag to filter results to entries that contain it.
+            </p>
           </div>
           {globalTagCloud.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 pt-2">
@@ -2559,7 +2859,8 @@ function AIIntelligenceView({
             </div>
           ) : (
             <p className="text-xs text-slate-500 italic">
-              No tags yet. Add <code className="px-1 py-0.5 rounded bg-white/10">#yourtag</code> in any entry and they'll appear here.
+              No tags yet. Add <code className="px-1 py-0.5 rounded bg-white/10">#yourtag</code> in any entry and
+              they'll appear here.
             </p>
           )}
         </section>
@@ -2570,12 +2871,12 @@ function AIIntelligenceView({
 }
 
 /* ==========================================================================
-   MONTH + YEAR SCROLL-WHEEL PICKER MODAL
+ MONTH + YEAR SCROLL-WHEEL PICKER MODAL
 
-   Smooth fade-in backdrop, two iOS-style scrollable wheels (month + year),
-   snap-to-center selection, with Prev / Today / Next preserved on the
-   HomeView behind it. Date selection still happens via the calendar grid.
-   ========================================================================== */
+ Smooth fade-in backdrop, two iOS-style scrollable wheels (month + year),
+ snap-to-center selection, with Prev / Today / Next preserved on the
+ HomeView behind it. Date selection still happens via the calendar grid.
+ ========================================================================== */
 function MonthYearPicker({
   month,
   year,
@@ -2628,12 +2929,7 @@ function MonthYearPicker({
           </button>
         </div>
         <div className="mt-6 flex gap-4 justify-center">
-          <ScrollWheel
-            label="Month"
-            items={MONTH_NAMES}
-            valueIndex={tempMonth}
-            onChange={(idx) => setTempMonth(idx)}
-          />
+          <ScrollWheel label="Month" items={MONTH_NAMES} valueIndex={tempMonth} onChange={(idx) => setTempMonth(idx)} />
           <ScrollWheel
             label="Year"
             items={yearOptions.map((y) => String(y))}
@@ -2755,7 +3051,11 @@ function ScrollWheel({
                 className={cn(
                   "block w-full text-center transition-all duration-200 snap-center",
                   isPlaceholder ? "cursor-default" : "cursor-pointer",
-                  isSelected ? "text-white text-lg font-semibold" : isPlaceholder ? "" : "text-slate-400 text-base hover:text-slate-200",
+                  isSelected
+                    ? "text-white text-lg font-semibold"
+                    : isPlaceholder
+                      ? ""
+                      : "text-slate-400 text-base hover:text-slate-200",
                 )}
                 style={{ height: SCROLL_WHEEL_ITEM_HEIGHT, lineHeight: `${SCROLL_WHEEL_ITEM_HEIGHT}px` }}
               >
@@ -2770,15 +3070,9 @@ function ScrollWheel({
 }
 
 /* ==========================================================================
-   MOOD PIE CHART + LEGEND
-   ========================================================================== */
-function MoodPieChart({
-  moods,
-  distribution,
-}: {
-  moods: MoodOption[];
-  distribution: Record<MoodId, number>;
-}) {
+ MOOD PIE CHART + LEGEND
+ ========================================================================== */
+function MoodPieChart({ moods, distribution }: { moods: MoodOption[]; distribution: Record<MoodId, number> }) {
   const total = moods.reduce((sum, m) => sum + (distribution[m.id] || 0), 0);
   const normalized = total || 1;
   let cumulative = 0;
@@ -2791,7 +3085,7 @@ function MoodPieChart({
           <circle cx="60" cy="60" r={radius} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
           {moods.map((m) => {
             const value = distribution[m.id] || 0;
-            if (value === 0) return null;              // âœ… no entries â†’ no dot
+            if (value === 0) return null; // âœ… no entries â†’ no dot
             const fraction = value / normalized;
             const dash = 2 * Math.PI * radius;
             const seg = dash * fraction;
@@ -2805,7 +3099,7 @@ function MoodPieChart({
                 r={radius}
                 stroke={m.color}
                 strokeWidth={stroke}
-                strokeLinecap="butt"                   // âœ… no round cap = no ghost dot
+                strokeLinecap="butt" // âœ… no round cap = no ghost dot
                 fill="none"
                 strokeDasharray={`${seg} ${dash - seg}`}
                 strokeDashoffset={offset}
@@ -2832,7 +3126,10 @@ function MoodLegend() {
       <div className="mt-4 grid gap-3">
         {MOODS.map((mood) => (
           <div key={mood.id} className="flex items-center gap-3 text-sm text-slate-300">
-            <span className="h-3 w-3 rounded-full" style={{ backgroundColor: mood.color, boxShadow: `0 0 16px ${mood.glow}` }} />
+            <span
+              className="h-3 w-3 rounded-full"
+              style={{ backgroundColor: mood.color, boxShadow: `0 0 16px ${mood.glow}` }}
+            />
             <span className="font-medium text-white">{mood.label}</span>
             <span className="text-slate-500">{mood.description}</span>
           </div>
@@ -2846,7 +3143,10 @@ function MoodChip({ mood }: { mood: MoodId }) {
   const option = MOOD_BY_ID[mood];
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 py-2 text-sm text-slate-200">
-      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: option.color, boxShadow: `0 0 16px ${option.glow}` }} />
+      <span
+        className="h-2.5 w-2.5 rounded-full"
+        style={{ backgroundColor: option.color, boxShadow: `0 0 16px ${option.glow}` }}
+      />
       {option.label}
     </span>
   );
@@ -2887,8 +3187,8 @@ function AmbientBackdrop() {
 }
 
 /* ==========================================================================
-   DRAFT + ASSESSMENT CACHE HELPERS
-   ========================================================================== */
+ DRAFT + ASSESSMENT CACHE HELPERS
+ ========================================================================== */
 function saveDraft(draft: DraftEntry): void {
   try {
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
@@ -2969,12 +3269,10 @@ function normalizeConfig(config: GitHubConfig): GitHubConfig {
 }
 
 /* ==========================================================================
-   GOOGLE DRIVE BACKUP HELPERS
-   ========================================================================== */
+ GOOGLE DRIVE BACKUP HELPERS
+ ========================================================================== */
 function stripHtmlToText(html: string): string {
-  const withBreaks = html
-    .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n");
+  const withBreaks = html.replace(/<\/(p|div|li|h[1-6])>/gi, "\n").replace(/<br\s*\/?>/gi, "\n");
   const withoutTags = withBreaks.replace(/<[^>]+>/g, "");
   const decoded = withoutTags
     .replace(/&nbsp;/g, " ")
@@ -2993,7 +3291,7 @@ function stripHtmlToText(html: string): string {
 
 function buildDriveBackupText(vault: VaultData): string {
   const lines: string[] = [];
-  lines.push("MOONLIT DIARY â€” FULL BACKUP");
+  lines.push("MOONLIT DIARY - FULL BACKUP");
   lines.push(`Exported ${new Date().toLocaleString()}`);
   lines.push(`${vault.entries.length} ${vault.entries.length === 1 ? "entry" : "entries"}`);
   lines.push("=".repeat(60));
@@ -3005,7 +3303,7 @@ function buildDriveBackupText(vault: VaultData): string {
     lines.push(`Mood: ${entry.mood}`);
     if (entry.dailyWin) lines.push(`Daily win: ${entry.dailyWin}`);
     if (entry.attachments?.length) {
-      lines.push(`Attachments: ${entry.attachments.length} photo(s) â€” not included in this text backup, view in app`);
+      lines.push(`Attachments: ${entry.attachments.length} photo(s) - not included in this text backup, view in app`);
     }
     lines.push("-".repeat(40));
     lines.push(stripHtmlToText(entry.bodyHtml) || "(no written content)");
@@ -3097,7 +3395,10 @@ function DriveBackupPanel({
 }) {
   const isConnected = status === "connected" || status === "synced" || status === "syncing";
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in"
+      onClick={onClose}
+    >
       <div
         className="relative w-[min(92vw,28rem)] rounded-[2rem] border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-float-in"
         onClick={(e) => e.stopPropagation()}
@@ -3121,7 +3422,8 @@ function DriveBackupPanel({
           <>
             <p className="mt-5 text-sm text-slate-300/80">
               When connected, a plain-text copy of every entry (decrypted, readable) is written to a file named{" "}
-              <span className="text-slate-100">"{DRIVE_BACKUP_FILE_NAME}"</span> in your Google Drive, updated every time you save.
+              <span className="text-slate-100">"{DRIVE_BACKUP_FILE_NAME}"</span> in your Google Drive, updated every
+              time you save.
             </p>
             <div className="mt-5 flex items-center gap-2 text-sm">
               <span
@@ -3139,7 +3441,7 @@ function DriveBackupPanel({
               <span className="text-slate-200">
                 {status === "disconnected" && "Not connected"}
                 {status === "connecting" && "Connectingâ€¦"}
-                {status === "connected" && "Connected â€” will back up on next save"}
+                {status === "connected" && "Connected - will back up on next save"}
                 {status === "syncing" && "Backing upâ€¦"}
                 {status === "synced" && "Backed up"}
                 {status === "error" && "Error"}
@@ -3155,7 +3457,11 @@ function DriveBackupPanel({
                   <button type="button" onClick={onSyncNow} className="nav-button-primary flex-1">
                     Back up now
                   </button>
-                  <button type="button" onClick={onDisconnect} className="nav-button text-rose-300/80 hover:bg-rose-500/10">
+                  <button
+                    type="button"
+                    onClick={onDisconnect}
+                    className="nav-button text-rose-300/80 hover:bg-rose-500/10"
+                  >
                     Disconnect
                   </button>
                 </>
@@ -3173,8 +3479,8 @@ function DriveBackupPanel({
 }
 
 /* ==========================================================================
-   CRYPTO + GITHUB HELPERS
-   ========================================================================== */
+ CRYPTO + GITHUB HELPERS
+ ========================================================================== */
 async function encryptVault(vault: VaultData, passphrase: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -3226,13 +3532,9 @@ function normalizeVault(vault: VaultData): VaultData {
 }
 
 async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: number) {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(passphrase),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
+  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey",
+  ]);
   const saltBuffer = new Uint8Array(salt).buffer as ArrayBuffer;
   return crypto.subtle.deriveKey(
     { name: "PBKDF2", salt: saltBuffer, iterations, hash: "SHA-256" },
@@ -3243,7 +3545,9 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: 
   );
 }
 
-async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boolean; sha: string | null; text: string }> {
+async function fetchGitHubVaultFile(
+  config: GitHubConfig,
+): Promise<{ exists: boolean; sha: string | null; text: string }> {
   const response = await fetch(gitHubContentUrl(config), { headers: githubHeaders(config), cache: "no-store" });
   if (response.status === 404) return { exists: false, sha: null, text: "" };
   if (!response.ok) throw new Error(await githubErrorMessage(response));
@@ -3253,7 +3557,7 @@ async function fetchGitHubVaultFile(config: GitHubConfig): Promise<{ exists: boo
   }
   if (data.sha) {
     // File is over the 1MB inline-content limit. Don't follow download_url to
-    // raw.githubusercontent.com â€” that domain doesn't support CORS with an
+    // raw.githubusercontent.com - that domain doesn't support CORS with an
     // Authorization header, so the browser's preflight fails. Instead, re-request
     // the same api.github.com endpoint using the raw media type, which does
     // support CORS with our auth header.
@@ -3340,8 +3644,8 @@ function base64ToBytes(value: string) {
 }
 
 /* ==========================================================================
-   DATE + TAG HELPERS
-   ========================================================================== */
+ DATE + TAG HELPERS
+ ========================================================================== */
 function dateToKey(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -3359,7 +3663,9 @@ function addMonths(date: Date, amount: number) {
 }
 
 function formatDateLong(key: string) {
-  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(keyToDate(key));
+  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(
+    keyToDate(key),
+  );
 }
 
 function buildMonthCells(monthDate: Date) {
@@ -3398,8 +3704,23 @@ function sanitizeHtml(html: string) {
   template.innerHTML = html;
   template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
   const allowedTags = new Set([
-    "A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "H1", "H2", "H3",
-    "I", "LI", "OL", "P", "SPAN", "STRONG", "U", "UL",
+    "A",
+    "B",
+    "BLOCKQUOTE",
+    "BR",
+    "DIV",
+    "EM",
+    "H1",
+    "H2",
+    "H3",
+    "I",
+    "LI",
+    "OL",
+    "P",
+    "SPAN",
+    "STRONG",
+    "U",
+    "UL",
   ]);
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
   const elements: Element[] = [];
@@ -3560,8 +3881,8 @@ function extractManualTags(html: string, title: string): string[] {
 }
 
 /* ==========================================================================
-   LIGHTBOX VIEWER
-   ========================================================================== */
+ LIGHTBOX VIEWER
+ ========================================================================== */
 function LightboxViewer({
   attachments,
   currentIndex,
@@ -3637,7 +3958,10 @@ function LightboxViewer({
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
           className="flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-2 text-white transition backdrop-blur-md"
         >
           <span className="text-lg leading-none">â†</span>
@@ -3649,7 +3973,10 @@ function LightboxViewer({
           </span>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); downloadCurrent(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              downloadCurrent();
+            }}
             className="flex items-center gap-2 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 px-4 py-2 text-cyan-100 transition backdrop-blur-md"
           >
             <span className="text-sm">â¬‡</span>
@@ -3661,7 +3988,10 @@ function LightboxViewer({
         <>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onPrev(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrev();
+            }}
             className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Previous"
           >
@@ -3669,7 +3999,10 @@ function LightboxViewer({
           </button>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onNext(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onNext();
+            }}
             className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl transition backdrop-blur-md md:h-14 md:w-14"
             aria-label="Next"
           >
@@ -3679,10 +4012,14 @@ function LightboxViewer({
       ) : null}
       <div className="absolute bottom-4 left-0 right-0 z-10 text-center px-4">
         <p className="text-white/80 text-sm truncate max-w-2xl mx-auto bg-black/50 inline-block px-4 py-2 rounded-full backdrop-blur-md">
-          {currentAttachment.name} <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
+          {currentAttachment.name}{" "}
+          <span className="text-white/50 ml-2 text-xs">({formatBytes(currentAttachment.size)})</span>
         </p>
       </div>
-      <div className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="relative max-w-[95vw] max-h-[80vh] flex items-center justify-center"
+        onClick={(e) => e.stopPropagation()}
+      >
         {currentAttachment.type.startsWith("image/") ? (
           <img
             src={currentAttachment.dataUrl}

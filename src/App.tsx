@@ -1849,23 +1849,24 @@ function AIIntelligenceView({
   const [aiAnswer, setAiAnswer] = useState("");
   const [isSearchingAI, setIsSearchingAI] = useState(false);
   const [aiTagsByEntryId, setAITagsByEntryId] = useState<Record<string, string[]>>({});
+  const safeEntries = useMemo(() => entries.map(normalizeDiaryEntry).filter((entry) => entry.date), [entries]);
 
   const localTagsByEntryId = useMemo(() => {
-    return entries.reduce<Record<string, string[]>>((acc, item) => {
+    return safeEntries.reduce<Record<string, string[]>>((acc, item) => {
       acc[item.id] = extractTopicsAndTags(item.bodyHtml, item.title);
       return acc;
     }, {});
-  }, [entries]);
+  }, [safeEntries]);
 
   useEffect(() => {
-    if (entries.length === 0) {
+    if (safeEntries.length === 0) {
       setAITagsByEntryId({});
       return;
     }
 
     let isCancelled = false;
     const timer = window.setTimeout(async () => {
-      const recentEntries = entries.slice(-30);
+      const recentEntries = safeEntries.slice(-30);
       const tagPairs = await Promise.all(
         recentEntries.map(async (item) => {
           try {
@@ -1889,11 +1890,11 @@ function AIIntelligenceView({
       isCancelled = true;
       window.clearTimeout(timer);
     };
-  }, [entries]);
+  }, [safeEntries]);
 
   const globalTopicCloud = useMemo(() => {
     const frequencyMap: Record<string, number> = {};
-    entries.forEach((item) => {
+    safeEntries.forEach((item) => {
       const extracted = mergeTopicTags(aiTagsByEntryId[item.id] ?? [], localTagsByEntryId[item.id] ?? []);
       extracted.forEach((t) => {
         frequencyMap[t] = (frequencyMap[t] || 0) + 1;
@@ -1902,7 +1903,7 @@ function AIIntelligenceView({
     return Object.entries(frequencyMap)
       .map(([text, count]) => ({ text, count }))
       .sort((a, b) => b.count - a.count);
-  }, [aiTagsByEntryId, entries, localTagsByEntryId]);
+  }, [aiTagsByEntryId, safeEntries, localTagsByEntryId]);
 
   const expandedTerms = useMemo(() => {
     const queries = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -1923,7 +1924,7 @@ function AIIntelligenceView({
   }, [searchQuery]);
 
   const filteredEntries = useMemo(() => {
-    return entries.filter((item) => {
+    return safeEntries.filter((item) => {
       const bodyClean = htmlToText(item.bodyHtml).toLowerCase();
       const titleClean = item.title.toLowerCase();
       const dateString = item.date;
@@ -1943,15 +1944,15 @@ function AIIntelligenceView({
       }
       return true;
     }).sort((a, b) => b.date.localeCompare(a.date));
-  }, [activeTag, aiTagsByEntryId, entries, expandedTerms, localTagsByEntryId]);
+  }, [activeTag, aiTagsByEntryId, safeEntries, expandedTerms, localTagsByEntryId]);
 
   const emotionalDistribution = useMemo(() => {
     const tallies = createMoodTallies();
-    entries.forEach((e) => {
+    safeEntries.forEach((e) => {
       if (tallies[e.mood] !== undefined) tallies[e.mood]++;
     });
     return tallies;
-  }, [entries]);
+  }, [safeEntries]);
 
   const maxDistributionCount = Math.max(...Object.values(emotionalDistribution), 1);
   const indexProgressPercent = indexingState.total > 0 ? Math.round((indexingState.indexed / indexingState.total) * 100) : 100;
@@ -1964,7 +1965,7 @@ function AIIntelligenceView({
     setIsSearchingAI(true);
     setAiAnswer("Thinking through your timeline memory...");
     try {
-      const response = await smartAISearch(searchQuery, entries);
+      const response = await smartAISearch(searchQuery, safeEntries);
       setAiAnswer(response);
     } catch (err) {
       setAiAnswer("Error analyzing diary entries. Ensure VITE_GROQ_API_KEY is configured in GitHub.");
@@ -2435,16 +2436,62 @@ function normalizeVault(vault: VaultData): VaultData {
   };
 }
 
-function normalizeDiaryEntry(entry: DiaryEntry): DiaryEntry {
-  const hasCurrentIndex = hasCurrentSearchIndex(entry);
-  const failedWithoutCurrentIndex = !hasCurrentIndex && entry.aiSearchIndexStatus === "failed";
+function normalizeDiaryEntry(entry: Partial<DiaryEntry> | null | undefined): DiaryEntry {
+  const now = new Date().toISOString();
+  const mood = isMoodId(entry?.mood) ? entry.mood : "happy";
+  const normalizedEntry: DiaryEntry = {
+    id: asString(entry?.id) || `entry-${normalizeDateKey(entry?.date)}`,
+    date: normalizeDateKey(entry?.date),
+    title: asString(entry?.title) || "Untitled entry",
+    mood,
+    bodyHtml: asString(entry?.bodyHtml),
+    dailyWin: asString(entry?.dailyWin),
+    attachments: Array.isArray(entry?.attachments) ? entry.attachments : [],
+    createdAt: asString(entry?.createdAt) || now,
+    updatedAt: asString(entry?.updatedAt) || now,
+    aiSearchIndex: isSearchIndex(entry?.aiSearchIndex) ? entry.aiSearchIndex : null,
+    aiSearchIndexStatus: entry?.aiSearchIndexStatus === "failed" ? "failed" : entry?.aiSearchIndexStatus === "indexed" ? "indexed" : "pending",
+    aiSearchIndexError: asString(entry?.aiSearchIndexError) || undefined,
+  };
+
+  const hasCurrentIndex = hasCurrentSearchIndex(normalizedEntry);
+  const failedWithoutCurrentIndex = !hasCurrentIndex && normalizedEntry.aiSearchIndexStatus === "failed";
 
   return {
-    ...entry,
-    aiSearchIndex: hasCurrentIndex ? entry.aiSearchIndex ?? null : null,
+    ...normalizedEntry,
+    aiSearchIndex: hasCurrentIndex ? normalizedEntry.aiSearchIndex ?? null : null,
     aiSearchIndexStatus: hasCurrentIndex ? "indexed" : failedWithoutCurrentIndex ? "failed" : "pending",
-    aiSearchIndexError: failedWithoutCurrentIndex ? entry.aiSearchIndexError : undefined,
+    aiSearchIndexError: failedWithoutCurrentIndex ? normalizedEntry.aiSearchIndexError : undefined,
   };
+}
+
+function isMoodId(value: unknown): value is MoodId {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(MOOD_BY_ID, value);
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeDateKey(value: unknown) {
+  const dateValue = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : dateToKey(new Date());
+  const date = keyToDate(dateValue);
+  return Number.isNaN(date.getTime()) ? dateToKey(new Date()) : dateValue;
+}
+
+function isSearchIndex(value: unknown): value is AISearchIndex {
+  if (!value || typeof value !== "object") return false;
+  const index = value as Partial<AISearchIndex>;
+  return (
+    typeof index.contentHash === "string" &&
+    typeof index.summary === "string" &&
+    Array.isArray(index.people) &&
+    Array.isArray(index.places) &&
+    Array.isArray(index.events) &&
+    Array.isArray(index.topics) &&
+    Array.isArray(index.emotions) &&
+    Array.isArray(index.keywords)
+  );
 }
 
 function createSearchIndexingState(entries: DiaryEntry[]): SearchIndexingState {
@@ -2729,7 +2776,8 @@ function countTermHits(text: string, terms: readonly string[]) {
 }
 
 function extractTopicsAndTags(html: string, title: string): string[] {
-  const combinedText = `${title} ${htmlToText(html)}`.toLowerCase();
+  const safeTitle = asString(title);
+  const combinedText = `${safeTitle} ${htmlToText(html)}`.toLowerCase();
   const foundTags = new Set<string>();
 
   const hashMatches = combinedText.match(/#[a-z0-9_-]+/g);
@@ -2744,7 +2792,7 @@ function extractTopicsAndTags(html: string, title: string): string[] {
     if (countTermHits(combinedText, terms) > 0) foundTags.add(tag);
   });
 
-  const titleKeywords = title
+  const titleKeywords = safeTitle
     .toLowerCase()
     .match(/[a-z][a-z0-9-]{3,}/g)
     ?.filter((word) => !STOPWORDS.has(word))
@@ -2812,7 +2860,7 @@ function createId() {
 }
 
 function htmlToText(html: string) {
-  return html
+  return asString(html)
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<[^>]+>/g, " ")

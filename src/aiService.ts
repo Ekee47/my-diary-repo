@@ -82,9 +82,9 @@ class AIRequestQueue {
 
 // Groq's free tier tolerates fast pacing.
 const aiQueue = new AIRequestQueue(1100);
-// Gemini's free tier is only ~10 requests/minute — pace well under that (~8/min)
-// so background indexing can never eat the quota a live search needs.
-const geminiQueue = new AIRequestQueue(7000);
+// Gemini's documented free tier is ~10 RPM, but live per-account limits can be lower
+// (this project has been observed at 5 RPM) — pace conservatively under that.
+const geminiQueue = new AIRequestQueue(13000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* ==========================================================================
@@ -172,9 +172,23 @@ async function callGemini(
             : `Gemini is rate-limited (too many requests per minute). ${detail}`.trim(),
         );
         if (isDaily) break; // no backoff clears a daily quota — stop retrying immediately
-        // Per-minute limit — Gemini's rolling window is ~60s, not sub-second, so a
-        // short backoff won't clear it. Wait meaningfully longer before retrying.
-        const backoff = 6000 * (attempt + 1) + Math.random() * 1000;
+
+        // Google tells us exactly how long to wait, either as structured RetryInfo
+        // ("retryDelay": "43s") or in the message text ("Please retry in 43.5s").
+        // Honor that instead of guessing — guessing too short just burns retries.
+        const retryInfoSeconds = errData?.error?.details?.find(
+          (d: any) => typeof d?.retryDelay === "string",
+        )?.retryDelay;
+        const parsedFromDetail = retryInfoSeconds ? parseFloat(retryInfoSeconds) : NaN;
+        const parsedFromMessage = parseFloat(detail.match(/retry in\s+([\d.]+)\s*s/i)?.[1] ?? "");
+        const suggestedSeconds = !Number.isNaN(parsedFromDetail)
+          ? parsedFromDetail
+          : !Number.isNaN(parsedFromMessage)
+            ? parsedFromMessage
+            : null;
+        const backoff = suggestedSeconds !== null
+          ? suggestedSeconds * 1000 + 2000 + Math.random() * 1000
+          : 12000 * (attempt + 1) + Math.random() * 1000;
         await sleep(backoff);
         continue;
       }
@@ -232,8 +246,12 @@ export async function generateSearchIndex(entry: { title: string; bodyHtml: stri
   if (!text.trim()) return "";
   try {
     const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
+    // Only 1 retry here (vs. the default 4 used for live search) — indexing runs in the
+    // background across a whole batch of entries, so a single stubborn one shouldn't be
+    // allowed to eat minutes of backoff. Better to fail fast, move to the next entry, and
+    // let the user hit "retry" on the whole batch later once the rate limit has cleared.
     const data = await geminiQueue.enqueue(null, () =>
-      callGemini(INDEX_SYSTEM_PROMPT, userPrompt, { temperature: 0.1, maxOutputTokens: 500 }),
+      callGemini(INDEX_SYSTEM_PROMPT, userPrompt, { temperature: 0.1, maxOutputTokens: 500, retries: 1 }),
     );
     return extractGeminiText(data);
   } catch (error) {

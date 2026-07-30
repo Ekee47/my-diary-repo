@@ -149,33 +149,34 @@ async function callGemini(
   let lastErr: any = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const response = await fetch(GEMINI_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": GEMINI_API_KEY,
-        },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-          generationConfig: { temperature, maxOutputTokens },
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      let response: Response;
+      try {
+        response = await fetch(GEMINI_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+          },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+            generationConfig: { temperature, maxOutputTokens },
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (response.status === 429) {
         const errData = await response.json().catch(() => ({}));
         const detail: string = errData?.error?.message || "";
         const isDaily = /per[\s_-]?day|PerDay|daily/i.test(detail);
-        lastErr = new Error(
-          isDaily
-            ? `Gemini's free daily quota is used up for today (resets at midnight Pacific Time). ${detail}`.trim()
-            : `Gemini is rate-limited (too many requests per minute). ${detail}`.trim(),
-        );
-        if (isDaily) break; // no backoff clears a daily quota — stop retrying immediately
 
-        // Google tells us exactly how long to wait, either as structured RetryInfo
+        // Google tells us how long it wants us to wait, either as structured RetryInfo
         // ("retryDelay": "43s") or in the message text ("Please retry in 43.5s").
-        // Honor that instead of guessing — guessing too short just burns retries.
         const retryInfoSeconds = errData?.error?.details?.find(
           (d: any) => typeof d?.retryDelay === "string",
         )?.retryDelay;
@@ -186,9 +187,28 @@ async function callGemini(
           : !Number.isNaN(parsedFromMessage)
             ? parsedFromMessage
             : null;
+
+        // HARD CAP: we share one queue across search and background indexing, so
+        // blindly sleeping for whatever Google suggests (which can be minutes, not
+        // seconds, once you're deep into a quota window) would freeze everything
+        // behind it too — including a live search. If the suggested wait is longer
+        // than this, don't wait it out automatically: bail now so the queue frees up,
+        // and let the user retry manually once the limit has actually cleared.
+        const MAX_AUTO_WAIT_MS = 15000;
+
+        if (isDaily || (suggestedSeconds !== null && suggestedSeconds * 1000 > MAX_AUTO_WAIT_MS)) {
+          lastErr = new Error(
+            isDaily
+              ? `Gemini's free daily quota is used up for today (resets at midnight Pacific Time). ${detail}`.trim()
+              : `Gemini is rate-limited and asked to wait ${Math.round(suggestedSeconds ?? 0)}s — too long to auto-retry right now. Try again in a bit. ${detail}`.trim(),
+          );
+          break; // don't hold up the whole queue — fail fast, retry later manually
+        }
+
+        lastErr = new Error(`Gemini is rate-limited (too many requests per minute). ${detail}`.trim());
         const backoff = suggestedSeconds !== null
-          ? suggestedSeconds * 1000 + 2000 + Math.random() * 1000
-          : 12000 * (attempt + 1) + Math.random() * 1000;
+          ? suggestedSeconds * 1000 + 1000 + Math.random() * 500
+          : Math.min(8000 * (attempt + 1), MAX_AUTO_WAIT_MS) + Math.random() * 1000;
         await sleep(backoff);
         continue;
       }

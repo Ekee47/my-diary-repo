@@ -1,29 +1,18 @@
 // src/aiService.ts
-export interface AISearchIndex {
-  provider: "groq";
-  contentHash: string;
-  summary: string;
-  people: string[];
-  places: string[];
-  events: string[];
-  topics: string[];
-  emotions: string[];
-  keywords: string[];
-  createdAt: string;
-}
-
 export interface DiaryEntry {
   id: string;
   date: string;
   title: string;
   bodyHtml: string;
-  dailyWin?: string;
-  aiSearchIndex?: AISearchIndex | null;
+  aiSearchIndex?: string;
 }
 
 const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL_NAME = "llama-3.1-8b-instant";
+// Deep Analytics gets the stronger 70B model - indexed entries keep total prompt size
+// modest now, so we can afford better reasoning without hitting Groq's TPM limits.
+const SEARCH_MODEL_NAME = "llama-3.3-70b-versatile";
 
 const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -257,78 +246,50 @@ function extractGeminiText(data: any): string {
   return parts.map((p: any) => p?.text || "").join("").trim();
 }
 
-const SEARCH_INDEX_SYSTEM_PROMPT = `
-You are the private, intelligent AI brain of the user's personal journal.
-The user writes their journal entries using a casual mixture of English, Hindi written in the Latin/Roman script (Hinglish, e.g., "kal mai beach gaya tha", "aisi baat samaj aani chahiye"), and common internet abbreviations/slang (e.g., 'btw', 'idk', 'brb', 'clg', 'fyi').
-
-Create a compact search index for one diary entry.
-Return ONLY valid JSON matching the requested shape. No markdown.
-`.trim();
-
 /* ==========================================================================
    SEARCH INDEXING — runs once per entry (on save, or as a one-time backfill),
-   not on every search. Compresses an entry into structured Groq JSON that
-   Deep Analytics reads instead of raw text.
+   not on every search. Compresses an entry into a small, dense, factual index
+   that Deep Analytics reads instead of raw text, so future searches are
+   faster/cheaper while still covering every entry and every fact in it.
    ========================================================================== */
-export async function generateSearchIndex(
-  entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin">,
-  contentHash: string,
-): Promise<AISearchIndex> {
-  if (!API_KEY) {
-    throw new Error("VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.");
-  }
-
-  const currentText = cleanHtmlToText(entry.bodyHtml);
-  if (!currentText.trim()) {
-    throw new Error("Entry has no text to index.");
-  }
-
-  const prompt = `
-Create a compact search index for this diary entry.
-
-Date: ${entry.date}
-Title: ${entry.title || "Untitled"}
-Daily win: ${entry.dailyWin || "None"}
-Entry text: ${currentText}
-
-Return ONLY this JSON shape:
-{
-  "summary": "2-4 sentence factual summary",
-  "people": ["person names or relationship labels"],
-  "places": ["places"],
-  "events": ["important events or actions"],
-  "topics": ["lowercase topic labels"],
-  "emotions": ["emotions or moods"],
-  "keywords": ["search terms, synonyms, Hinglish translations"]
-}
+const INDEX_SYSTEM_PROMPT = `
+You compress ONE diary entry into a dense factual index for another AI to search later.
+Rules:
+- Include EVERY named person, place, event, and notable emotional beat mentioned — never omit any of them to save space.
+- Preserve exact names and specific details. Never generalize ("a friend") if a name was given.
+- Do not add opinions, speculation, or anything not explicitly in the entry.
+- Write compact fragments (semicolon or newline separated), not full prose paragraphs.
+- Prioritize completeness over brevity — if you must choose, keep every fact even if the result runs long.
+Output ONLY the index text. No preamble, no labels, nothing else.
 `.trim();
 
-  const data = await aiQueue.enqueue(`index:${contentHash}`, () =>
-    callGroq({
-      model: MODEL_NAME,
-      messages: [
-        { role: "system", content: SEARCH_INDEX_SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.15,
-      max_tokens: 800,
-    }),
-  );
-
-  const rawContent = data?.choices?.[0]?.message?.content ?? "";
-  const parsed = parseJsonObject(rawContent);
-  return {
-    provider: "groq",
-    contentHash,
-    summary: coerceString(parsed.summary).slice(0, 1400),
-    people: coerceStringArray(parsed.people).slice(0, 20),
-    places: coerceStringArray(parsed.places).slice(0, 20),
-    events: coerceStringArray(parsed.events).slice(0, 24),
-    topics: normalizeTags(coerceStringArray(parsed.topics)).slice(0, 24),
-    emotions: normalizeTags(coerceStringArray(parsed.emotions)).slice(0, 16),
-    keywords: normalizeKeywords(coerceStringArray(parsed.keywords)).slice(0, 50),
-    createdAt: new Date().toISOString(),
-  };
+export async function generateSearchIndex(entry: { title: string; bodyHtml: string }): Promise<string> {
+  if (!API_KEY) return "";
+  const text = cleanHtmlToText(entry.bodyHtml);
+  if (!text.trim()) return "";
+  try {
+    const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
+    // Only 1 retry here (vs. the default 4 used for live search) — indexing runs in the
+    // background across a whole batch of entries, so a single stubborn one shouldn't be
+    // allowed to eat minutes of backoff. Better to fail fast, move to the next entry, and
+    // let the user hit "retry" on the whole batch later once the rate limit has cleared.
+    const data = await aiQueue.enqueue(null, () =>
+      callGroq({
+        model: MODEL_NAME,
+        messages: [
+          { role: "system", content: INDEX_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.1,
+        max_tokens: 500,
+      }),
+    );
+    const content = data?.choices?.[0]?.message?.content;
+    return typeof content === "string" ? content.trim() : "";
+  } catch (error) {
+    console.error("Search index generation failed:", error);
+    return "";
+  }
 }
 
 /* ==========================================================================
@@ -435,8 +396,8 @@ function truncateForPrompt(text: string, maxChars = 2500): string {
    1) SMART SEARCH — much more forgiving, name/keyword aware
    ========================================================================== */
 export async function smartAISearch(query: string, entries: DiaryEntry[]): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    return "AI Error: VITE_GEMINI_API_KEY is missing in your GitHub Actions Secrets configuration.";
+  if (!API_KEY) {
+    return "AI Error: VITE_GROQ_API_KEY is missing in your GitHub Actions Secrets configuration.";
   }
   if (!query.trim()) {
     return "Type a question above and I'll dig through your saved entries.";
@@ -453,19 +414,10 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
 
   const formattedContext = relevantEntries
     .map((e) => {
-      const body = e.aiSearchIndex
-        ? `PRE-ANALYZED INDEX (dense, complete — covers every fact/person/event in this entry):\n${[
-            e.aiSearchIndex.summary,
-            ...e.aiSearchIndex.people,
-            ...e.aiSearchIndex.places,
-            ...e.aiSearchIndex.events,
-            ...e.aiSearchIndex.topics,
-            ...e.aiSearchIndex.emotions,
-            ...e.aiSearchIndex.keywords,
-          ]
-            .filter(Boolean)
-            .join(" | ")}`
-        : `ENTRY_TEXT:\n${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}`;
+      const body =
+        typeof e.aiSearchIndex === "string" && e.aiSearchIndex.trim()
+          ? `PRE-ANALYZED INDEX (dense, complete — covers every fact/person/event in this entry):\n${e.aiSearchIndex.trim()}`
+          : `ENTRY_TEXT:\n${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}`;
       return `
 ENTRY_DATE_ISO: ${e.date}
 CLICKABLE_DATE: [${isoToReadableDate(e.date)}]
@@ -538,19 +490,28 @@ ${formattedContext}
 `.trim();
 
   try {
-    const data = await geminiQueue.enqueue(
+    const data = await aiQueue.enqueue(
       `search:${query}`,
-      () => callGemini(SYSTEM_PROMPT, prompt, { temperature: 0.3, maxOutputTokens: 4096 }),
+      () =>
+        callGroq({
+          model: SEARCH_MODEL_NAME,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.3,
+          max_tokens: 2048,
+        }),
       { priority: true },
     );
 
-    const content = extractGeminiText(data);
-    if (!content) {
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || content.trim().length === 0) {
       return "I couldn't extract a confident answer from your entries for that query. Try rephrasing with a different keyword or a date hint.";
     }
-    return content;
+    return content.trim();
   } catch (error: any) {
-    console.error("Gemini AI Error:", error);
+    console.error("Groq AI Error:", error);
     return `AI search failed: ${error?.message || "check your internet connection or API key."}`;
   }
 }
@@ -818,31 +779,4 @@ function quickHeuristicEmotion(text: string): string {
   if (has("missed", "miss her", "miss him", "missing"))
     return "Tender and missing them";
   return "Processing emotions";
-}
-
-function parseJsonObject(rawContent: string): Record<string, unknown> {
-  const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-  const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawContent);
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-}
-
-function coerceString(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function coerceStringArray(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
-}
-
-function normalizeTags(tags: string[]) {
-  return tags
-    .map((tag) => tag.toLowerCase().replace(/^#/, "").replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-"))
-    .filter(Boolean);
-}
-
-function normalizeKeywords(keywords: string[]) {
-  return keywords
-    .map((keyword) => keyword.toLowerCase().replace(/^#/, "").replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, " "))
-    .filter(Boolean);
 }

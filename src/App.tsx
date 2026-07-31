@@ -330,7 +330,9 @@ function createSearchIndexContentHash(entry: Pick<DiaryEntry, "date" | "title" |
 }
 
 function hasCurrentSearchIndex(entry: DiaryEntry) {
-  if (!entry.aiSearchIndex || !entry.aiSearchIndexHash) return false;
+  if (typeof entry.aiSearchIndex !== "string" || !entry.aiSearchIndex.trim() || !entry.aiSearchIndexHash) {
+    return false;
+  }
   return entry.aiSearchIndexHash === createSearchIndexContentHash(entry);
 }
 
@@ -4094,4 +4096,3 @@ function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Something went wrong.";
 }
-

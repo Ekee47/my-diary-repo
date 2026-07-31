@@ -403,7 +403,7 @@ export async function smartAISearch(query: string, entries: DiaryEntry[]): Promi
   const formattedContext = relevantEntries
     .map((e) => {
       const body =
-        e.aiSearchIndex && e.aiSearchIndex.trim()
+        typeof e.aiSearchIndex === "string" && e.aiSearchIndex.trim()
           ? `PRE-ANALYZED INDEX (dense, complete — covers every fact/person/event in this entry):\n${e.aiSearchIndex.trim()}`
           : `ENTRY_TEXT:\n${truncateForPrompt(cleanHtmlToText(e.bodyHtml))}`;
       return `

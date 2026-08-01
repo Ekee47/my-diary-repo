@@ -269,10 +269,6 @@ export async function generateSearchIndex(entry: { title: string; bodyHtml: stri
   if (!text.trim()) return "";
   try {
     const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
-    // Only 1 retry here (vs. the default 4 used for live search) — indexing runs in the
-    // background across a whole batch of entries, so a single stubborn one shouldn't be
-    // allowed to eat minutes of backoff. Better to fail fast, move to the next entry, and
-    // let the user hit "retry" on the whole batch later once the rate limit has cleared.
     const data = await aiQueue.enqueue(null, () =>
       callGroq({
         model: MODEL_NAME,

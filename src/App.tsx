@@ -10,7 +10,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { cn } from "./utils/cn";
-import { smartAISearch, generateAICustomQuestion, assessEntryEmotion, generateSearchIndex, type AISearchIndex } from "./aiService";
+import { smartAISearch, generateAICustomQuestion, assessEntryEmotion, generateSearchIndex } from "./aiService";
 
 type MoodId = "happy" | "depressed" | "sleepy" | "angry" | "romantic" | "crazy" | "meh";
 type Screen = "home" | "entry" | "view" | "year" | "ai";
@@ -62,7 +62,8 @@ type DiaryEntry = {
   createdAt: string;
   updatedAt: string;
   aiAssessment?: string;
-  aiSearchIndex?: AISearchIndex | null;
+  aiSearchIndex?: string;
+  aiSearchIndexHash?: string;
   aiSearchIndexStatus?: "pending" | "indexed" | "failed";
   aiSearchIndexError?: string;
 };
@@ -328,8 +329,11 @@ function createSearchIndexContentHash(entry: Pick<DiaryEntry, "date" | "title" |
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function hasCurrentSearchIndex(entry: Pick<DiaryEntry, "date" | "title" | "bodyHtml" | "dailyWin" | "aiSearchIndex">) {
-  return Boolean(entry.aiSearchIndex && entry.aiSearchIndex.contentHash === createSearchIndexContentHash(entry));
+function hasCurrentSearchIndex(entry: DiaryEntry) {
+  if (typeof entry.aiSearchIndex !== "string" || !entry.aiSearchIndex.trim() || !entry.aiSearchIndexHash) {
+    return false;
+  }
+  return entry.aiSearchIndexHash === createSearchIndexContentHash(entry);
 }
 
 function hasWrittenContent(bodyHtml: string) {
@@ -572,7 +576,13 @@ export default function App() {
    *  retry via indexRetryNonce). Uses a content hash per entry so an edited entry
    *  automatically gets re-indexed, not just brand-new ones. Indexes sequentially
    *  through the existing Groq-backed generateSearchIndex (with its queue/retry/
-   *  backoff already built in), then commits once at the end. */
+   *  backoff already built in).
+   *
+   *  IMPORTANT: this effect depends on vault.entries, so it must NEVER call setVault
+   *  mid-loop - doing so changes vault.entries, which re-triggers this same effect,
+   *  which cancels the in-flight run and restarts it, forever interrupting itself
+   *  before any entry finishes. Progress is reflected via searchIndexingState only
+   *  (not a dependency here), and the vault is committed once, after the batch. */
   useEffect(() => {
     if (!isUnlocked || !config || !passphrase || vault.entries.length === 0) return;
     if (syncState === "loading" || syncState === "saving") return;
@@ -604,14 +614,15 @@ export default function App() {
         if (isCancelled) return;
         const contentHash = createSearchIndexContentHash(entry);
         try {
-          const aiSearchIndex = await generateSearchIndex(entry, contentHash);
+          const index = await generateSearchIndex(entry);
           nextEntries = nextEntries.map((item) =>
             item.id === entry.id
               ? {
                   ...item,
-                  aiSearchIndex,
-                  aiSearchIndexStatus: "indexed" as const,
-                  aiSearchIndexError: undefined,
+                  aiSearchIndex: index || undefined,
+                  aiSearchIndexHash: index ? contentHash : undefined,
+                  aiSearchIndexStatus: index ? ("indexed" as const) : ("failed" as const),
+                  aiSearchIndexError: index ? undefined : "Indexing returned no result.",
                 }
               : item,
           );
@@ -620,7 +631,8 @@ export default function App() {
             item.id === entry.id
               ? {
                   ...item,
-                  aiSearchIndex: null,
+                  aiSearchIndex: undefined,
+                  aiSearchIndexHash: undefined,
                   aiSearchIndexStatus: "failed" as const,
                   aiSearchIndexError: getErrorMessage(error),
                 }
@@ -628,23 +640,22 @@ export default function App() {
           );
         }
 
+        if (isCancelled) return;
         completed += 1;
-        if (!isCancelled) {
-          setSearchIndexingState({
-            ...createSearchIndexingState(nextEntries),
-            isIndexing: completed < entriesToIndex.length,
-            message: `Indexing diary memory ${completed}/${entriesToIndex.length}`,
-          });
-          // Reflect progress locally right away so the UI moves live; the actual
-          // GitHub commit still happens once, after the whole sweep finishes.
-          setVault((prevVault) => ({ ...prevVault, entries: nextEntries }));
-        }
+        // Only touch the status pill here - NOT vault.entries - so this effect can't
+        // re-trigger itself mid-batch (see note above).
+        setSearchIndexingState({
+          ...createSearchIndexingState(nextEntries),
+          isIndexing: completed < entriesToIndex.length,
+          message: `Indexing diary memory ${completed}/${entriesToIndex.length}`,
+        });
       }
 
       if (isCancelled) return;
 
       const finalVault: VaultData = { ...vault, updatedAt: new Date().toISOString(), entries: nextEntries };
       setSearchIndexingState(createSearchIndexingState(nextEntries));
+      setVault(finalVault);
       try {
         await persistVault(finalVault, "Update AI diary search indexes");
       } catch (error) {
@@ -1595,31 +1606,19 @@ function EntryEditor({
     setLocalError("");
     setIsWorking(true);
     try {
+      const plainBody = htmlToText(bodyHtml).trim();
       const now = new Date().toISOString();
-      const nextTitle = title.trim() || "Untitled entry";
-      const nextBodyHtml = sanitizeHtml(bodyHtml).trim();
-      const nextEntryForHash = {
-        date: dateKey,
-        title: nextTitle,
-        bodyHtml: nextBodyHtml,
-        dailyWin: dailyWin.trim(),
-      };
-      const nextIndexHash = createSearchIndexContentHash(nextEntryForHash);
-      const existingSearchIndex = entry?.aiSearchIndex?.contentHash === nextIndexHash ? entry.aiSearchIndex : null;
       const nextEntry: DiaryEntry = {
         id: entry?.id ?? createId(),
         date: dateKey,
-        title: nextTitle,
+        title: title.trim() || "Untitled entry",
         mood,
-        bodyHtml: nextBodyHtml,
+        bodyHtml: sanitizeHtml(bodyHtml).trim(),
         dailyWin: dailyWin.trim(),
         attachments,
         createdAt: entry?.createdAt ?? now,
         updatedAt: now,
         aiAssessment: aiAssessment || entry?.aiAssessment,
-        aiSearchIndex: existingSearchIndex,
-        aiSearchIndexStatus: existingSearchIndex ? "indexed" : "pending",
-        aiSearchIndexError: undefined,
       };
       await onSave(nextEntry);
     } catch (error) {
@@ -3580,72 +3579,8 @@ function normalizeVault(vault: VaultData): VaultData {
   return {
     version: 1,
     updatedAt: vault.updatedAt || new Date().toISOString(),
-    entries: Array.isArray(vault.entries) ? vault.entries.map(normalizeDiaryEntry) : [],
+    entries: Array.isArray(vault.entries) ? vault.entries : [],
   };
-}
-
-function normalizeDiaryEntry(entry: Partial<DiaryEntry> | null | undefined): DiaryEntry {
-  const now = new Date().toISOString();
-  const mood = isMoodId(entry?.mood) ? entry.mood : "happy";
-  const normalizedEntry: DiaryEntry = {
-    id: asString(entry?.id) || `entry-${normalizeDateKey(entry?.date)}`,
-    date: normalizeDateKey(entry?.date),
-    title: asString(entry?.title) || "Untitled entry",
-    mood,
-    bodyHtml: asString(entry?.bodyHtml),
-    dailyWin: asString(entry?.dailyWin),
-    attachments: Array.isArray(entry?.attachments) ? entry.attachments : [],
-    createdAt: asString(entry?.createdAt) || now,
-    updatedAt: asString(entry?.updatedAt) || now,
-    aiAssessment: asString(entry?.aiAssessment) || undefined,
-    aiSearchIndex: isSearchIndex(entry?.aiSearchIndex) ? entry.aiSearchIndex : null,
-    aiSearchIndexStatus:
-      entry?.aiSearchIndexStatus === "failed"
-        ? "failed"
-        : entry?.aiSearchIndexStatus === "indexed"
-          ? "indexed"
-          : "pending",
-    aiSearchIndexError: asString(entry?.aiSearchIndexError) || undefined,
-  };
-
-  const hasCurrentIndex = hasCurrentSearchIndex(normalizedEntry);
-  const failedWithoutCurrentIndex = !hasCurrentIndex && normalizedEntry.aiSearchIndexStatus === "failed";
-
-  return {
-    ...normalizedEntry,
-    aiSearchIndex: hasCurrentIndex ? normalizedEntry.aiSearchIndex ?? null : null,
-    aiSearchIndexStatus: hasCurrentIndex ? "indexed" : failedWithoutCurrentIndex ? "failed" : "pending",
-    aiSearchIndexError: failedWithoutCurrentIndex ? normalizedEntry.aiSearchIndexError : undefined,
-  };
-}
-
-function isMoodId(value: unknown): value is MoodId {
-  return typeof value === "string" && Object.prototype.hasOwnProperty.call(MOOD_BY_ID, value);
-}
-
-function asString(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function normalizeDateKey(value: unknown) {
-  const dateValue = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : dateToKey(new Date());
-  const date = keyToDate(dateValue);
-  return Number.isNaN(date.getTime()) ? dateToKey(new Date()) : dateValue;
-}
-
-function isSearchIndex(value: unknown): value is AISearchIndex {
-  if (!value || typeof value !== "object") return false;
-  const index = value as Partial<AISearchIndex>;
-  return (
-    typeof index.contentHash === "string" &&
-    typeof index.summary === "string" &&
-    Array.isArray(index.people) &&
-    Array.isArray(index.places) &&
-    Array.isArray(index.events) &&
-    Array.isArray(index.topics) &&
-    Array.isArray(index.emotions) &&
-    Array.isArray(index.keywords)
-  );
 }
 
 async function deriveVaultKey(passphrase: string, salt: Uint8Array, iterations: number) {

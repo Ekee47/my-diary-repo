@@ -390,6 +390,7 @@ export default function App() {
   const [driveError, setDriveError] = useState("");
   const [driveLastSynced, setDriveLastSynced] = useState<string | null>(null);
   const [showDrivePanel, setShowDrivePanel] = useState(false);
+  const [gisReady, setGisReady] = useState(false);
   const driveTokenRef = useRef<string | null>(null);
   const driveTokenClientRef = useRef<GoogleTokenClient | null>(null);
   const [indexRetryNonce, setIndexRetryNonce] = useState(0);
@@ -423,6 +424,7 @@ export default function App() {
           setDriveError("");
         },
       });
+      setGisReady(true);
       return true;
     }
     if (!tryInit()) {
@@ -871,6 +873,7 @@ export default function App() {
           error={driveError}
           lastSynced={driveLastSynced}
           configured={Boolean(GOOGLE_CLIENT_ID)}
+          gisReady={gisReady}
           onConnect={connectDrive}
           onDisconnect={disconnectDrive}
           onSyncNow={() => syncDriveBackup(vault)}
@@ -3431,6 +3434,7 @@ function DriveBackupPanel({
   error,
   lastSynced,
   configured,
+  gisReady,
   onConnect,
   onDisconnect,
   onSyncNow,
@@ -3440,6 +3444,7 @@ function DriveBackupPanel({
   error: string;
   lastSynced: string | null;
   configured: boolean;
+  gisReady: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
   onSyncNow: () => void;
@@ -3518,8 +3523,13 @@ function DriveBackupPanel({
                   </button>
                 </>
               ) : (
-                <button type="button" onClick={onConnect} className="nav-button-primary flex-1">
-                  Connect Google Drive
+                <button
+                  type="button"
+                  onClick={onConnect}
+                  disabled={!gisReady}
+                  className={cn("nav-button-primary flex-1", !gisReady && "opacity-50 cursor-wait")}
+                >
+                  {gisReady ? "Connect Google Drive" : "Loading Google Sign-in…"}
                 </button>
               )}
             </div>

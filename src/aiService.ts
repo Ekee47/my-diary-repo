@@ -9,10 +9,13 @@ export interface DiaryEntry {
 
 const API_KEY = (import.meta as any).env?.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL_NAME = "llama-3.1-8b-instant";
-// Deep Analytics gets the stronger 70B model - indexed entries keep total prompt size
-// modest now, so we can afford better reasoning without hitting Groq's TPM limits.
-const SEARCH_MODEL_NAME = "llama-3.3-70b-versatile";
+// Groq shut down llama-3.1-8b-instant and llama-3.3-70b-versatile on 16 Aug 2026 - every
+// request to those IDs now fails, which is what broke diary indexing and AI search.
+// Their official replacements are the GPT-OSS models below. Both can be overridden with
+// VITE_GROQ_MODEL (fast/background tasks) and VITE_GROQ_SEARCH_MODEL (Deep Analytics)
+// so the next deprecation is a one-line GitHub Actions variable change, not a code change.
+const MODEL_NAME = (import.meta as any).env?.VITE_GROQ_MODEL || "openai/gpt-oss-20b";
+const SEARCH_MODEL_NAME = (import.meta as any).env?.VITE_GROQ_SEARCH_MODEL || "openai/gpt-oss-120b";
 
 const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -93,10 +96,31 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /* ==========================================================================
    Low-level Groq call with retries
    ========================================================================== */
+class FatalAIError extends Error {}
+
+/** GPT-OSS models are reasoning models: they "think" before answering and those hidden
+ *  reasoning tokens count against the completion limit. With the tiny max_tokens values this
+ *  app uses (30-500) the model would burn the whole budget thinking and return an EMPTY answer.
+ *  So for them we ask for low reasoning effort and add headroom on top of the visible budget. */
+function prepareGroqBody(body: Record<string, unknown>): Record<string, unknown> {
+  const model = String(body.model ?? "");
+  if (!model.startsWith("openai/gpt-oss")) return body;
+  const { max_tokens, ...rest } = body as { max_tokens?: number } & Record<string, unknown>;
+  return {
+    ...rest,
+    reasoning_effort: (rest.reasoning_effort as string | undefined) ?? "low",
+    max_completion_tokens: (typeof max_tokens === "number" ? max_tokens : 1000) + 1200,
+  };
+}
+
 async function callGroq(
   body: Record<string, unknown>,
   { retries = 3 }: { retries?: number } = {},
 ): Promise<any> {
+  if (!API_KEY) {
+    throw new FatalAIError("VITE_GROQ_API_KEY is missing from this build (add it in GitHub repo Settings > Secrets).");
+  }
+  const payload = prepareGroqBody(body);
   let lastErr: any = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -106,7 +130,7 @@ async function callGroq(
           "Content-Type": "application/json",
           Authorization: `Bearer ${API_KEY}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       });
 
       if (response.status === 429 || response.status >= 500) {
@@ -118,13 +142,16 @@ async function callGroq(
       }
 
       if (!response.ok) {
+        // 4xx (bad key, model removed, request too large...) will never succeed on retry,
+        // so fail immediately with Groq's own message instead of burning 4 attempts.
         const errData = await response.json().catch(() => ({}));
-        throw new Error(
+        throw new FatalAIError(
           `AI Response Error (${response.status}): ${errData?.error?.message || "Failed."}`,
         );
       }
       return await response.json();
     } catch (e) {
+      if (e instanceof FatalAIError) throw e;
       lastErr = e;
       if (attempt < retries) {
         await sleep(600 * Math.pow(2, attempt));
@@ -264,28 +291,33 @@ Output ONLY the index text. No preamble, no labels, nothing else.
 `.trim();
 
 export async function generateSearchIndex(entry: { title: string; bodyHtml: string }): Promise<string> {
-  if (!API_KEY) return "";
   const text = cleanHtmlToText(entry.bodyHtml);
   if (!text.trim()) return "";
-  try {
-    const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
-    const data = await aiQueue.enqueue(null, () =>
-      callGroq({
-        model: MODEL_NAME,
-        messages: [
-          { role: "system", content: INDEX_SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.1,
-        max_tokens: 500,
-      }),
+  const userPrompt = `TITLE: ${entry.title}\nENTRY TEXT:\n${text}`;
+  // Errors are deliberately NOT swallowed here any more. The old version caught everything and
+  // returned "", so a dead model / bad key / rate limit all showed up as the same useless
+  // "Indexing returned no result." Now the real reason reaches the AI page.
+  const data = await aiQueue.enqueue(null, () =>
+    callGroq({
+      model: MODEL_NAME,
+      messages: [
+        { role: "system", content: INDEX_SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.1,
+      max_tokens: 900,
+    }),
+  );
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content;
+  if (typeof content !== "string" || !content.trim()) {
+    throw new Error(
+      choice?.finish_reason === "length"
+        ? "The AI ran out of tokens before finishing this entry's index."
+        : "The AI returned an empty answer for this entry.",
     );
-    const content = data?.choices?.[0]?.message?.content;
-    return typeof content === "string" ? content.trim() : "";
-  } catch (error) {
-    console.error("Search index generation failed:", error);
-    return "";
   }
+  return content.trim();
 }
 
 /* ==========================================================================
@@ -497,6 +529,7 @@ ${formattedContext}
           ],
           temperature: 0.3,
           max_tokens: 2048,
+          reasoning_effort: "medium", // exhaustive cross-entry search benefits from a bit more thinking
         }),
       { priority: true },
     );
@@ -581,7 +614,7 @@ ${formattedContext}
  { role: "user", content: prompt },
  ],
  temperature: 0.75,
- max_tokens: 80,
+ max_tokens: 120,
  }),
  );
 
